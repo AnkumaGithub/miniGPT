@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import math
+from torch.utils.checkpoint import checkpoint
 
 class RotaryPositionalEmbeddings(nn.Module):
     def __init__(self, dim, max_seq_len=4096):
@@ -25,8 +26,8 @@ class RotaryPositionalEmbeddings(nn.Module):
         cos = self.cos[:seq_len]
 
         #Повторяем элементы для совмещения размерности
-        sin = sin.repeat_interleave(2, dim=-1)
-        cos = cos.repeat_interleave(2, dim=-1)
+        sin = self.sin[:seq_len].repeat(1, 2)
+        cos = self.cos[:seq_len].repeat(1, 2)
 
         #Добавляем размерности для broadcast [1, 1, seq_len, 1, head_dim]
         sin = sin.view(1, 1, seq_len, head_dim)
@@ -58,6 +59,7 @@ class CausalSelfAttention(nn.Module):
                                  .view(1, 1, config.block_size, config.block_size))
 
     def forward(self, x, past_key_values=None):
+        assert not torch.isnan(x).any(), "Обнаружены NaN в активациях"
         B, T, C = x.size()
 
         #Проецируем и разделяем Q, K, V
@@ -92,8 +94,12 @@ class CausalSelfAttention(nn.Module):
             att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
 
             #Создаем маску
-            if past_key_values is None:
-                mask = self.bias[:, :, :T, :T]
+            if past_key_values is not None:
+                past_k, past_v = past_key_values
+                mask = torch.cat([
+                    torch.ones(T, past_k.size(2), dtype=torch.bool, device=x.device),
+                    torch.tril(torch.ones(T, T, device=x.device))
+                ], dim=1)
             else:
                 mask = torch.ones(T, k.size(2), dtype=torch.bool, device=x.device)
                 mask = torch.tril(mask, diagonal=k.size(2) - T)
@@ -117,11 +123,13 @@ class LayerNorm(nn.Module):
         self.bias = nn.Parameter(torch.zeros(ndim)) if bias else None
 
     def forward(self, input):
+        assert not torch.isnan(input).any(), "Обнаружены NaN в активациях"
         return F.layer_norm(input, self.weight.shape, self.weight, self.bias, 1e-5)
 
 
 class SwiGLU(nn.Module):
     def forward(self, x):
+        assert not torch.isnan(x).any(), "Обнаружены NaN в активациях"
         x, gate = x.chunk(2, dim=-1)  # Разделяем вход на две части
         return x * F.silu(gate)  # Корректная реализация SwiGLU
 
@@ -130,7 +138,7 @@ class MLP(nn.Module):
     def __init__(self, config):
         super().__init__()
         #Расчет hidden_dim как в LLaMA
-        hidden_dim = int(4 * config.n_embd * 2 / 3)
+        hidden_dim = int((4 * config.n_embd) * 2 / 3)
         hidden_dim = hidden_dim + (8 - hidden_dim % 8)  # Опциональное выравнивание для TPU/GPU
 
         self.c_fc = nn.Linear(
@@ -157,6 +165,9 @@ class MLP(nn.Module):
             nn.init.zeros_(self.c_proj.bias)
 
     def forward(self, x):
+        return checkpoint(self._forward, x)
+    def _forward(self, x):
+        assert not torch.isnan(x).any(), "Обнаружены NaN в активациях"
         x = self.c_fc(x)
         x = self.swiglu(x)
         x = self.c_proj(x)
