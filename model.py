@@ -14,6 +14,7 @@ class GPTConfig:
     n_head: int = 8
     n_embd: int = 256
     dropout: float = 0.1
+    drop_path_rate: float = 0.1
     bias: bool = False
     lora_rank: int = 8
 
@@ -148,6 +149,21 @@ class LayerNorm(nn.Module):
         assert not torch.isnan(input).any(), "Обнаружены NaN в активациях"
         return F.layer_norm(input, self.weight.shape, self.weight, self.bias, 1e-5)
 
+class DropPath(nn.Module):
+    def __init__(self, drop_prob=0.0):
+        super().__init__()
+        self.drop_prob = drop_prob
+
+    def forward(self, x):
+        if self.drop_prob == 0.0 or not self.training:
+            return x
+        keep_prob = 1 - self.drop_prob
+        # Работа с многомерными тензорами
+        shape = (x.shape[0],) + (1,) * (x.ndim - 1)
+        mask = torch.rand(shape, dtype=x.dtype, device=x.device) < keep_prob
+        x = x / keep_prob  # Масштабирование для сохранения матожидания
+        return x * mask
+
 class SwiGLU(nn.Module):
     def forward(self, x):
         assert not torch.isnan(x).any(), "Обнаружены NaN в активациях"
@@ -179,10 +195,17 @@ class Block(nn.Module):
         self.attn = CausalSelfAttention(config)
         self.ln_2 = nn.LayerNorm(config.n_embd, bias=config.bias)
         self.mlp = MLP(config)
-        self.config = config
+
+        # Добавляем DropPath
+        self.drop_path1 = DropPath(config.drop_path_rate)
+        self.drop_path2 = DropPath(config.drop_path_rate)
 
     def forward(self, x, past_key_values=None, use_cache=False):
+        # Применяем DropPath к выходу self-attention
         attn_out, new_key_values = self.attn(self.ln_1(x), past_key_values, use_cache)
-        x = x + attn_out
-        x = x + self.mlp(self.ln_2(x))
+        x = x + self.drop_path1(attn_out)
+        # Применяем DropPath к выходу MLP
+        mlp_out = self.mlp(self.ln_2(x))
+        x = x + self.drop_path2(mlp_out)
+
         return x, new_key_values
