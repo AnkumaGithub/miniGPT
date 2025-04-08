@@ -109,3 +109,56 @@ class CausalSelfAttention(nn.Module):
         y = self.resid_dropout(self.c_proj(y))
 
         return (y, new_key_values) if new_key_values is not None else y
+
+class LayerNorm(nn.Module):
+    def __init__(self, ndim, bias):
+        super().__init__()
+        self.weight = nn.Parameter(torch.ones(ndim))
+        self.bias = nn.Parameter(torch.zeros(ndim)) if bias else None
+
+    def forward(self, input):
+        return F.layer_norm(input, self.weight.shape, self.weight, self.bias, 1e-5)
+
+
+class SwiGLU(nn.Module):
+    def forward(self, x):
+        x, gate = x.chunk(2, dim=-1)  # Разделяем вход на две части
+        return x * F.silu(gate)  # Корректная реализация SwiGLU
+
+
+class MLP(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        #Расчет hidden_dim как в LLaMA
+        hidden_dim = int(4 * config.n_embd * 2 / 3)
+        hidden_dim = hidden_dim + (8 - hidden_dim % 8)  # Опциональное выравнивание для TPU/GPU
+
+        self.c_fc = nn.Linear(
+            in_features=config.n_embd,
+            out_features=2 * hidden_dim,  # 2х для SwiGLU
+            bias=config.bias
+        )
+        self.swiglu = SwiGLU()
+        self.c_proj = nn.Linear(
+            in_features=hidden_dim,
+            out_features=config.n_embd,
+            bias=config.bias
+        )
+        self.dropout = nn.Dropout(config.dropout)
+        self._init_weights()
+
+    def _init_weights(self):
+        #Инициализация как в GPT-2
+        nn.init.normal_(self.c_fc.weight, mean=0.0, std=0.02)
+        nn.init.normal_(self.c_proj.weight, mean=0.0, std=0.02)
+        if self.c_fc.bias is not None:
+            nn.init.zeros_(self.c_fc.bias)
+        if self.c_proj.bias is not None:
+            nn.init.zeros_(self.c_proj.bias)
+
+    def forward(self, x):
+        x = self.c_fc(x)
+        x = self.swiglu(x)
+        x = self.c_proj(x)
+        return self.dropout(x)
+
