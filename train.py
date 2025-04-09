@@ -4,6 +4,7 @@ from tqdm import tqdm
 from torch.utils.data import Dataset, DataLoader
 from torch.cuda.amp import autocast, GradScaler
 from model import GPT, GPTConfig
+from threading import Thread
 
 
 class GPTDataset(Dataset):
@@ -26,7 +27,7 @@ def train():
     # Конфигурация для RTX 3060
     config = GPTConfig(
         block_size=1024,
-        vocab_size=50304,
+        vocab_size=50258,
         n_layer=6,
         n_head=8,
         n_embd=256,
@@ -49,7 +50,7 @@ def train():
 
     train_loader = DataLoader(
         GPTDataset('train', config.block_size),
-        batch_size=12,
+        batch_size=8,
         shuffle=True,
         num_workers=8,
         pin_memory=True,
@@ -58,7 +59,7 @@ def train():
 
     val_loader = DataLoader(
         GPTDataset('val', config.block_size),
-        batch_size=12,
+        batch_size=8,
         num_workers=8,
         pin_memory=True,
         persistent_workers=True
@@ -70,6 +71,11 @@ def train():
                                   lr=3e-4,
                                   weight_decay=0.1,
                                   fused=True)  # Включен fused Adam
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer,
+        T_max=len(train_loader) * 20,  # Общее число итераций
+        eta_min=3e-5
+    )
 
     for epoch in range(20):
         model.train()
@@ -85,15 +91,19 @@ def train():
                 loss = torch.nn.functional.cross_entropy(
                     logits.view(-1, logits.size(-1)),
                     Y.view(-1),
-                    ignore_index=0
+                    ignore_index=0 # так как нет padding
                 )
 
             scaler.scale(loss).backward()
+
+            # Gradient Clipping
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+
             scaler.step(optimizer)
             scaler.update()
+            scheduler.step()
             total_loss += loss.item()
-
-            torch.cuda.empty_cache()
 
         # Валидация с кешированием
         model.eval()
@@ -109,10 +119,16 @@ def train():
                 ).item()
         print(f"Epoch {epoch + 1} | "
               f"Train Loss: {total_loss / len(train_loader):.3f} | "
-              f"Val Loss: {val_loss / len(val_loader):.3f}")
+              f"Val Loss: {val_loss / len(val_loader):.3f} | ",
+              f"Memory allocated: {torch.cuda.memory_allocated()/1e9:.2f} GB")
 
-        # Асинхронное сохранение
-        torch.save(model.state_dict(), f"gpt_epoch_{epoch + 1}.pth")
+        checkpoint = {
+            "model": model.state_dict(),
+            "optimizer": optimizer.state_dict(),
+            "epoch": epoch,
+            "config": config
+        }
+        torch.save(checkpoint, f"gpt_epoch_{epoch}.pth")
 
 
 if __name__ == "__main__":
