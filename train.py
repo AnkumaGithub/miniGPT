@@ -41,7 +41,7 @@ def train():
     # PyTorch 2.0+
     if torch.__version__ >= "2.0.0":
         model = torch.compile(model, mode="max-autotune")
-        print("Модель компилируется с orch.compile()")
+        print("Модель компилируется с torch.compile()")
     else:
         print("Обновись до torch 2.0")
 
