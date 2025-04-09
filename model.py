@@ -13,10 +13,10 @@ class GPTConfig:
     n_layer: int = 6
     n_head: int = 8
     n_embd: int = 256
-    dropout: float = 0.1
+    dropout: float = 0.2
     drop_path_rate: float = 0.1
     bias: bool = False
-    lora_rank: int = 8
+    lora_rank: int = 12
 
 
 class LoRALinear(nn.Module):
@@ -209,3 +209,93 @@ class Block(nn.Module):
         x = x + self.drop_path2(mlp_out)
 
         return x, new_key_values
+
+
+class GPT(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.config = config
+
+        self.transformer = nn.ModuleDict(dict(
+            wte=nn.Embedding(config.vocab_size, config.n_embd),
+            drop=nn.Dropout(config.dropout),
+            h=nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
+            ln_f=LayerNorm(config.n_embd, bias=config.bias),
+        ))
+        self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
+        self.transformer.wte.weight = self.lm_head.weight  # Weight tying
+
+        self.apply(self._init_weights)
+        for pn, p in self.named_parameters():
+            if 'lora_' in pn:
+                if 'lora_A' in pn:
+                    nn.init.normal_(p, std=0.02)
+                elif 'lora_B' in pn:
+                    nn.init.zeros_(p)
+
+    def _init_weights(self, module):
+        if isinstance(module, nn.Linear):
+            if not hasattr(module, 'lora_A'):  # Инициализация только оригинальных весов
+                nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            if module.bias is not None:
+                nn.init.zeros_(module.bias)
+
+    def forward(self, idx, past_key_values=None, use_cache=False):
+        B, T = idx.size()
+        tok_emb = self.transformer.wte(idx)
+        x = self.transformer.drop(tok_emb)
+
+        new_key_values = []
+        for i, block in enumerate(self.transformer.h):
+            past_kv = past_key_values[i] if past_key_values else None
+            x, kv = block(x, past_kv, use_cache)
+            new_key_values.append(kv)
+
+        x = self.transformer.ln_f(x)
+        logits = self.lm_head(x)
+        return (logits, new_key_values) if use_cache else logits
+
+    def configure_optimizers(self, weight_decay=0.1, learning_rate=3e-4):
+        # Разделение параметров с весом и без
+        decay_params = []
+        no_decay_params = []
+        for pn, p in self.named_parameters():
+            if p.requires_grad:  # Только обучаемые параметры
+                if 'lora_' in pn or 'bias' in pn:
+                    no_decay_params.append(p)
+                else:
+                    decay_params.append(p)
+
+        optim_groups = [
+            {'params': decay_params, 'weight_decay': weight_decay},
+            {'params': no_decay_params, 'weight_decay': 0.0}
+        ]
+        return torch.optim.AdamW(optim_groups, lr=learning_rate)
+
+    @torch.no_grad()
+    def generate(self, idx, max_new_tokens=100, temperature=1.0, top_k=None):
+        self.eval()
+        past_key_values = None
+
+        for _ in range(max_new_tokens):
+            if idx.size(1) > self.config.block_size:
+                idx_cond = idx[:, -self.config.block_size:]
+                past_key_values = [(
+                    kv[0][:, :, -self.config.block_size:, :],
+                    kv[1][:, :, -self.config.block_size:, :]
+                ) for kv in past_key_values] if past_key_values else None
+            else:
+                idx_cond = idx
+
+            logits, past_key_values = self(idx_cond, past_key_values)
+            logits = logits[:, -1, :] / temperature
+
+            if top_k is not None:
+                v, _ = torch.topk(logits, top_k)
+                logits[logits < v[:, [-1]]] = -float('Inf')
+
+            probs = F.softmax(logits, dim=-1)
+            idx_next = torch.multinomial(probs, num_samples=1)
+            idx = torch.cat((idx, idx_next), dim=1)
+
+        return idx
