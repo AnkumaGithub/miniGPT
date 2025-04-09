@@ -23,13 +23,18 @@ def prepare_data():
     MAX_SEQ_LEN = 1024  # Макс длина последовательности
     ENCODING = "gpt2"  # Название токенизатора
 
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
     # Инициализация токенизатора
     enc = tiktoken.get_encoding(ENCODING)
     logging.info(f"Загружен токенизатор: {ENCODING} (vocab size: {enc.n_vocab})")
 
     # Загрузка датасета
     logging.info("Загрузка OpenWebText...")
-    dataset = load_dataset("openwebtext", num_proc=NUM_PROC_LOAD)
+    try:
+        dataset = load_dataset("openwebtext", num_proc=NUM_PROC_LOAD)
+    except Exception as e:
+        logging.error(f"Ошибка загрузки датасета: {str(e)}")
+        return
 
     # Создание train/val разделов
     split_dataset = dataset["train"].train_test_split(
@@ -42,8 +47,11 @@ def prepare_data():
     # Функция обработки текста
     def process_text(example):
         try:
-            text = example['text'].replace('\n', ' ')  # Чистка текста
-            ids = enc.encode_ordinary(text)  # Без спецтокенов
+            text = example['text'].replace('\n', ' ').strip()
+            if not text:  # Проверка на пустой текст
+                return {'ids': [], 'len': 0}
+
+            ids = enc.encode_ordinary(text)
             return {'ids': ids, 'len': len(ids)}
         except Exception as e:
             logging.error(f"Ошибка обработки: {str(e)}")
@@ -60,16 +68,22 @@ def prepare_data():
 
     # Фильтрация пустых примеров
     tokenized = tokenized.filter(lambda x: x['len'] > 0)
+    if len(tokenized['train']) == 0 or len(tokenized['val']) == 0:
+        logging.error("После фильтрации осталось 0 примеров!")
+        return
 
     # Сохранение в бинарный формат
     for split in ['train', 'val']:
-        logging.info(f"Обработка {split} раздела...")
         output_path = os.path.join(OUTPUT_DIR, f'{split}.bin')
-        os.makedirs(OUTPUT_DIR, exist_ok=True)
+        logging.info(f"Обработка {split} раздела -> {output_path}")
 
         # Расчет общего размера
-        total_len = sum(min(l, MAX_SEQ_LEN) for l in tokenized[split]['len'])
-        total_len = min(total_len, MAX_TOKENS)
+        lengths = [min(l, MAX_SEQ_LEN) for l in tokenized[split]['len']]
+        total_len = min(sum(lengths), MAX_TOKENS)
+
+        if total_len == 0:
+            logging.warning(f"{split} раздел пуст!")
+            continue
 
         # Создание memmap файла
         arr = np.memmap(
@@ -80,21 +94,21 @@ def prepare_data():
 
         # Постепенная запись
         current_idx = 0
-        for example in tqdm(tokenized[split], desc=f"Запись {split}.bin"):
-            ids = example['ids'][:MAX_SEQ_LEN]
-            available_space = total_len - current_idx
-            if available_space <= 0:
+        for example in tqdm(tokenized[split], desc=f"Запись {split}"):
+            if current_idx >= total_len:
                 break
-            ids = ids[:available_space]
-            arr[current_idx:current_idx + len(ids)] = ids
-            current_idx += len(ids)
 
-    arr.flush()
-    logging.info(f"Сохранено {current_idx} токенов в {output_path}")
+            ids = np.array(example['ids'][:MAX_SEQ_LEN], dtype=np.uint16)
+            write_len = min(len(ids), total_len - current_idx)
 
+            if write_len > 0:
+                arr[current_idx:current_idx + write_len] = ids[:write_len]
+                current_idx += write_len
 
-# Финализация
-logging.info("Обработка данных завершена!")
+        arr.flush()  # Форсированная запись на диск
+        logging.info(f"Сохранено {current_idx} токенов в {output_path}")
+    # Финализация
+    logging.info("Обработка данных завершена!")
 
 if __name__ == "__main__":
     prepare_data()
