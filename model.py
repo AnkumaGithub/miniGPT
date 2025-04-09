@@ -71,7 +71,7 @@ class CausalSelfAttention(nn.Module):
         q = self.rope(q, offset)
         k = self.rope(k, offset)
 
-        if past_key_values is not None and past_key_values[0] is not None:
+        if past_key_values is not None:
             k = torch.cat([past_key_values[0], k], dim=2)
             v = torch.cat([past_key_values[1], v], dim=2)
         new_key_values = (k, v) if use_cache else None
@@ -85,7 +85,10 @@ class CausalSelfAttention(nn.Module):
                 is_causal=True
             )
         else:
+            # Ручная реализация внимания с маской
             att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
+            causal_mask = self.bias[:T, :T].unsqueeze(0).unsqueeze(0).to(att.device)
+            att = att.masked_fill(causal_mask == 0, float('-inf'))
             att = F.softmax(att, dim=-1)
             att = self.attn_dropout(att)
             y = att @ v
@@ -106,11 +109,11 @@ class MLP(nn.Module):
         hidden_dim = 4 * config.n_embd
         self.c_fc = nn.Linear(config.n_embd, hidden_dim, bias=config.bias)
         self.swiglu = SwiGLU()
-        self.c_proj = nn.Linear(hidden_dim, config.n_embd, bias=config.bias)
+        self.c_proj = nn.Linear(hidden_dim // 2, config.n_embd, bias=config.bias)
         self.dropout = nn.Dropout(config.dropout)
 
     def _forward_impl(self, x):
-        return self.dropout(self.c_proj(self.gelu(self.c_fc(x))))
+        return self.dropout(self.c_proj(self.swiglu(self.c_fc(x))))
 
     def forward(self, x):
         return checkpoint(self._forward_impl, x)
@@ -181,11 +184,14 @@ class GPT(nn.Module):
         pos_emb = self.transformer.wpe(pos)
         x = self.transformer.drop(tok_emb + pos_emb)
 
-        new_key_values = []
+        new_key_values = [] if use_cache else None
         for i, block in enumerate(self.transformer.h):
             past_kv = past_key_values[i] if past_key_values else None
-            x, kv = block(x, past_kv, use_cache)
-            new_key_values.append(kv)
+            if use_cache:
+                x, kv = block(x, past_kv, use_cache)
+                new_key_values.append(kv)
+            else:
+                x = block(x, past_kv, use_cache)
 
         x = self.transformer.ln_f(x)
         logits = self.lm_head(x)
@@ -211,19 +217,15 @@ class GPT(nn.Module):
         generated = []
 
         for step in range(max_new_tokens):
-            # Обрезка последовательности и кеша при необходимости
             if past_key_values is None:
                 input_ids = idx
-                input_len = input_ids.size(1)
             else:
                 input_ids = idx[:, -1:]
-                input_len = 1
 
             # Проверка превышения максимальной длины
-            if input_len + step > self.config.block_size:
+            if input_ids.size(1) + step > self.config.block_size:
                 keep_len = self.config.block_size - step - 1
                 input_ids = input_ids[:, -keep_len:]
-
                 if past_key_values is not None:
                     past_key_values = [
                         (k[..., -keep_len:, :], v[..., -keep_len:, :])
