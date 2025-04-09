@@ -30,9 +30,9 @@ class RotaryPositionalEmbeddings(nn.Module):
         return torch.cat((-x2, x1), dim=-1)
 
     def forward(self, x, offset=0):
-        seq_len = x.size(1)
-        t = torch.arange(offset, offset + seq_len, dtype=self.inv_freq.dtype, device=x.device)
-        freqs = torch.einsum("i,j->ij", t, self.inv_freq)
+        seq_len = x.size(-2)
+        t = torch.arange(offset, offset + seq_len, dtype=self.inv_freq.dtype, device=x.device).unsqueeze(0).unsqueeze(-1)
+        freqs = t * self.inv_freq
         emb = torch.cat((freqs, freqs), dim=-1)
         cos = emb.cos().view(1, seq_len, 1, self.dim)
         sin = emb.sin().view(1, seq_len, 1, self.dim)
@@ -71,16 +71,17 @@ class CausalSelfAttention(nn.Module):
         q = self.rope(q, offset)
         k = self.rope(k, offset)
 
-        if past_key_values is not None:
+        if past_key_values is not None and past_key_values[0] is not None:
             k = torch.cat([past_key_values[0], k], dim=2)
             v = torch.cat([past_key_values[1], v], dim=2)
         new_key_values = (k, v) if use_cache else None
 
         if self.flash:
+            dropout_p = self.attn_dropout.p if self.training else 0
             y = F.scaled_dot_product_attention(
                 q, k, v,
                 attn_mask=None,
-                dropout_p=self.dropout if self.training else 0,
+                dropout_p=dropout_p,
                 is_causal=True
             )
         else:
@@ -93,18 +94,39 @@ class CausalSelfAttention(nn.Module):
         y = self.resid_dropout(self.c_proj(y))
         return y, new_key_values
 
+class SwiGLU(nn.Module):
+    def forward(self, x):
+        assert not torch.isnan(x).any(), "Обнаружены NaN в активациях"
+        x, gate = x.chunk(2, dim=-1)
+        return x * F.silu(gate)
 
 class MLP(nn.Module):
     def __init__(self, config):
         super().__init__()
         hidden_dim = 4 * config.n_embd
         self.c_fc = nn.Linear(config.n_embd, hidden_dim, bias=config.bias)
-        self.gelu = nn.GELU()
+        self.swiglu = SwiGLU()
         self.c_proj = nn.Linear(hidden_dim, config.n_embd, bias=config.bias)
         self.dropout = nn.Dropout(config.dropout)
 
+    def _forward_impl(self, x):
+        return self.dropout(self.c_proj(self.gelu(self.c_fc(x))))
+
     def forward(self, x):
-        return checkpoint(lambda x: self.dropout(self.c_proj(self.gelu(self.c_fc(x)))), x)
+        return checkpoint(self._forward_impl, x)
+
+
+class DropPath(nn.Module):
+    def __init__(self, p):
+        super().__init__()
+        self.p = p
+
+    def forward(self, x):
+        if self.training and self.p > 0:
+            mask_shape = (x.shape[0],) + (1,) * (x.ndim - 1)
+            mask = (torch.rand(*mask_shape) > self.p).to(x)
+            return x * mask / (1 - self.p)
+        return x
 
 
 class Block(nn.Module):
@@ -114,7 +136,7 @@ class Block(nn.Module):
         self.attn = CausalSelfAttention(config)
         self.ln_2 = nn.LayerNorm(config.n_embd, bias=config.bias)
         self.mlp = MLP(config)
-        self.drop_path = nn.Dropout(config.drop_path_rate) if config.drop_path_rate > 0 else nn.Identity()
+        self.drop_path = DropPath(config.drop_path_rate) if config.drop_path_rate > 0 else nn.Identity()
 
     def forward(self, x, past_key_values=None, use_cache=False):
         attn_out, new_kv = self.attn(self.ln_1(x), past_key_values, use_cache)
@@ -127,7 +149,6 @@ class GPT(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.config = config
-
         self.transformer = nn.ModuleDict(dict(
             wte=nn.Embedding(config.vocab_size, config.n_embd),
             wpe=nn.Embedding(config.block_size, config.n_embd),
@@ -147,10 +168,14 @@ class GPT(nn.Module):
                 nn.init.zeros_(module.bias)
         elif isinstance(module, nn.Embedding):
             nn.init.normal_(module.weight, mean=0.0, std=0.02)
+        elif isinstance(module, nn.LayerNorm):
+            if module.bias is not None:
+                nn.init.zeros_(module.bias)
+            nn.init.ones_(module.weight)
 
     def forward(self, idx, past_key_values=None, use_cache=False):
         B, T = idx.size()
-        pos = torch.arange(0, T, dtype=torch.long, device=idx.device)
+        pos = torch.arange(0, T, device=idx.device).unsqueeze(0)
 
         tok_emb = self.transformer.wte(idx)
         pos_emb = self.transformer.wpe(pos)
@@ -171,7 +196,6 @@ class GPT(nn.Module):
         no_decay = {'bias', 'LayerNorm.weight'}
 
         params = [
-            {'params': [p for n, p in self.named_parameters() if not p.requires_grad], 'lr': 0},  # Замороженные
             {'params': [p for n, p in self.named_parameters() if p.requires_grad and any(nd in n for nd in no_decay)],
              'weight_decay': 0.0},
             {'params': [p for n, p in self.named_parameters() if
@@ -180,21 +204,57 @@ class GPT(nn.Module):
         return torch.optim.AdamW(params, lr=learning_rate)
 
     @torch.no_grad()
-    def generate(self, idx, max_new_tokens=100, temperature=1.0, top_k=None):
+    def generate(self, idx, max_new_tokens=100, temperature=1.0, top_k=None, stop_token=None, echo=None) -> torch.Tensor:
         self.eval()
+        original_len = idx.size(1)
         past_key_values = None
+        generated = []
 
-        for _ in range(max_new_tokens):
-            idx_cond = idx if idx.size(1) <= self.config.block_size else idx[:, -self.config.block_size:]
-            logits, past_key_values = self(idx_cond, past_key_values, use_cache=True)
+        for step in range(max_new_tokens):
+            # Обрезка последовательности и кеша при необходимости
+            if past_key_values is None:
+                input_ids = idx
+                input_len = input_ids.size(1)
+            else:
+                input_ids = idx[:, -1:]
+                input_len = 1
+
+            # Проверка превышения максимальной длины
+            if input_len + step > self.config.block_size:
+                keep_len = self.config.block_size - step - 1
+                input_ids = input_ids[:, -keep_len:]
+
+                if past_key_values is not None:
+                    past_key_values = [
+                        (k[..., -keep_len:, :], v[..., -keep_len:, :])
+                        for (k, v) in past_key_values
+                    ]
+
+            # Прямой проход
+            logits, new_key_values = self(
+                input_ids,
+                past_key_values=past_key_values,
+                use_cache=True
+            )
+            past_key_values = new_key_values
+
+            # Сэмплинг следующего токена
             logits = logits[:, -1, :] / temperature
-
             if top_k is not None:
                 v, _ = torch.topk(logits, top_k)
                 logits[logits < v[:, [-1]]] = -float('Inf')
 
             probs = F.softmax(logits, dim=-1)
             idx_next = torch.multinomial(probs, num_samples=1)
-            idx = torch.cat((idx, idx_next), dim=1)
+            generated.append(idx_next)
 
-        return idx
+            # Остановка по токену
+            if stop_token is not None and idx_next.item() == stop_token:
+                break
+
+        # Сборка полной последовательности
+        generated = torch.cat(generated, dim=1)
+        full_sequence = torch.cat([idx, generated], dim=1) if echo else generated
+
+        # Обрезка до исходной максимальной длины + новых токенов
+        return full_sequence[:, :original_len + max_new_tokens]
