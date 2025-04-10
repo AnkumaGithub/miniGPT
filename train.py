@@ -38,6 +38,16 @@ class GPTDataset(Dataset):
         return chunk[:-1], chunk[1:]
 
 
+def log_gradients(model, experiment, step):
+    grad_data = {}
+    for name, param in model.named_parameters():
+        if param.grad is not None:
+            grad = param.grad
+            grad_data[f"grad/{name}_mean"] = grad.abs().mean().item()
+            grad_data[f"grad/{name}_max"] = grad.abs().max().item()
+    experiment.log_metrics(grad_data, step=step)
+
+
 def train():
     # Инициализация Comet ML
     experiment = Experiment(
@@ -89,11 +99,12 @@ def train():
 
         # DataLoader с проверкой данных
         try:
+            num_workers = min(8, os.cpu_count() // 2)
             train_loader = DataLoader(
                 GPTDataset('train', config.block_size),
                 batch_size=8,
                 shuffle=True,
-                num_workers=8,
+                num_workers=num_workers,
                 pin_memory=True,
                 persistent_workers=True
             )
@@ -130,12 +141,15 @@ def train():
             start_epoch = checkpoint['epoch'] + 1
             logging.info(f"Загружен чекпоинт эпохи {checkpoint['epoch']}")
 
+        global_step = 0
+
         for epoch in range(start_epoch, 20):
             try:
                 model.train()
                 total_loss = 0
 
-                for X, Y in tqdm(train_loader, desc=f"Epoch {epoch + 1}"):
+                train_iter = tqdm(train_loader, desc=f"Epoch {epoch + 1}")
+                for X, Y in train_iter:
                     X, Y = X.to('cuda', non_blocking=True), Y.to('cuda', non_blocking=True)
 
                     optimizer.zero_grad(set_to_none=True)
@@ -149,6 +163,26 @@ def train():
 
                     scaler.scale(loss).backward()
 
+                    if global_step % 100 == 0:
+                        log_gradients(model, experiment, global_step)
+                        grad_norms = [torch.norm(p.grad.detach(), 2).item()
+                                      for p in model.parameters()
+                                      if p.grad is not None]
+
+                        if grad_norms:  # Защита от пустого списка
+                            avg_norm = np.mean(grad_norms)
+                            max_norm = np.max(grad_norms)
+
+                            experiment.log_metrics({
+                                "grad/avg_norm": avg_norm,
+                                "grad/max_norm": max_norm
+                            }, step=global_step)
+                            if max_norm > 1e5:
+                                logging.error(f"Exploding gradients detected! Max norm: {max_norm:.2f}")
+                        else:
+                            logging.warning("No gradients found!")
+                    train_iter.set_postfix(loss=loss.item(), lr=scheduler.get_last_lr()[0])
+
                     # Gradient Clipping
                     scaler.unscale_(optimizer)
                     torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
@@ -156,13 +190,15 @@ def train():
                     scaler.step(optimizer)
                     scaler.update()
                     scheduler.step()
+
                     total_loss += loss.item()
+                    global_step += 1
 
                 # Валидация
                 model.eval()
                 val_loss = 0
-                with torch.no_grad(), autocast():
-                    for X, Y in val_loader:
+                with torch.inference_mode(), autocast():
+                    for X, Y in tqdm(val_loader, desc="Validation"):
                         X, Y = X.cuda(non_blocking=True), Y.cuda(non_blocking=True)
                         logits = model(X)
                         val_loss += torch.nn.functional.cross_entropy(
@@ -185,10 +221,18 @@ def train():
                     "learning_rate": current_lr,
                     "epoch": epoch + 1,
                     "gpu_memory_peak": torch.cuda.max_memory_allocated() / 1e9,
-                    "gpu_memory": torch.cuda.memory_allocated() / 1e9
-                })
+                    "gpu_memory_allocated": torch.cuda.memory_allocated() / 1e9,
+                    "gpu_memory_reserved": torch.cuda.memory_reserved() / 1e9
+                }, step=global_step
+                )
 
-                experiment.log_histogram_3d()
+                if epoch % 5 == 0:
+                    for name, param in model.named_parameters():
+                        experiment.log_histogram_3d(
+                            values=param.data.cpu().numpy().flatten(),
+                            name=f"weights/{name}",
+                            step=global_step
+                        )
 
                 # чекпоинт
                 checkpoint = {
