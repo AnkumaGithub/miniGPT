@@ -23,13 +23,13 @@ class GPTDataset(Dataset):
 
         self.data = np.memmap(self.data_path, dtype=np.uint16, mode='r')
         self.block_size = block_size
-        self.total_blocks = (len(self.data) - 1) // block_size  # Учитываем перекрытие
+        self.total_samples = len(self.data) - block_size
 
     def __len__(self):
-        return len(self.data) // self.block_size
+        return self.total_samples
 
     def __getitem__(self, idx):
-        start = idx * self.block_size
+        start = idx
         end = start + self.block_size + 1
         if end > len(self.data):
             raise IndexError("Index out of data range")
@@ -41,7 +41,7 @@ class GPTDataset(Dataset):
 def train():
     # Инициализация Comet ML
     experiment = Experiment(
-        api_key=os.getenv(COMET_API_KEY=os.getenv("COMET_API_KEY")),
+        api_key=os.getenv("COMET_API_KEY"),
         project_name="minigpt",
         workspace="ankumagithub",
         auto_param_logging=False,
@@ -110,13 +110,14 @@ def train():
 
         # Оптимизатор и скейлер
         scaler = GradScaler()
+        fused_available = hasattr(torch.optim, 'fused_adam')
         optimizer = torch.optim.AdamW(model.parameters(),
                                       lr=3e-4,
                                       weight_decay=0.1,
-                                      fused=True)  # Включен fused Adam
+                                      fused=fused_available)
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
             optimizer,
-            T_max=len(train_loader),
+            T_max=len(train_loader) * 20, # Полный цикл на 20 эпох
             eta_min=3e-5
         )
 
@@ -183,8 +184,11 @@ def train():
                     "val_loss": avg_val_loss,
                     "learning_rate": current_lr,
                     "epoch": epoch + 1,
+                    "gpu_memory_peak": torch.cuda.max_memory_allocated() / 1e9,
                     "gpu_memory": torch.cuda.memory_allocated() / 1e9
                 })
+
+                experiment.log_histogram_3d()
 
                 # чекпоинт
                 checkpoint = {
@@ -194,6 +198,7 @@ def train():
                     "config": config
                 }
                 torch.save(checkpoint, f"epoch_{epoch:02d}.pth")
+                torch.save(checkpoint, "latest_checkpoint.pth")
                 experiment.log_model(
                     f"epoch-{epoch:02d}",
                     f"epoch_{epoch:02d}.pth"
