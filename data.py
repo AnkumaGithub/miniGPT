@@ -1,5 +1,6 @@
 import os
 import numpy as np
+import psutil
 import tiktoken
 from datasets import load_dataset
 from tqdm import tqdm
@@ -22,18 +23,27 @@ def prepare_data():
     MAX_TOKENS = 1_000_000_000  # Максимум токенов (1B)
     MAX_SEQ_LEN = 1024  # Макс длина последовательности
     ENCODING = "gpt2"  # Название токенизатора
+    MIN_TEXT_LENGTH = 64
 
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     # Инициализация токенизатора
     enc = tiktoken.get_encoding(ENCODING)
-    logging.info(f"Загружен токенизатор: {ENCODING} (vocab size: {enc.n_vocab})")
+    if enc.n_vocab >= 65536:
+        dtype = np.uint32
+    else:
+        dtype = np.uint16
+    logging.info(f"Токенизатор: {ENCODING}, dtype: {dtype}")
 
     # Загрузка датасета
     logging.info("Загрузка OpenWebText...")
     try:
-        dataset = load_dataset("openwebtext", num_proc=NUM_PROC_LOAD)
+        dataset = load_dataset("Skylion007/openwebtext", num_proc=NUM_PROC_LOAD)
     except Exception as e:
         logging.error(f"Ошибка загрузки датасета: {str(e)}")
+        return
+
+    if 'train' not in dataset:
+        logging.error("Датасет не содержит раздела 'train'")
         return
 
     # Создание train/val разделов
@@ -48,11 +58,15 @@ def prepare_data():
     def process_text(example):
         try:
             text = example['text'].replace('\n', ' ').strip()
-            if not text:  # Проверка на пустой текст
+            if len(text) < MIN_TEXT_LENGTH:  # Добавить проверку минимальной длины
                 return {'ids': [], 'len': 0}
 
             ids = enc.encode_ordinary(text)
-            return {'ids': ids, 'len': len(ids)}
+            chunks = []
+            for i in range(0, len(ids), MAX_SEQ_LEN):
+                chunk = ids[i:i + MAX_SEQ_LEN]
+                chunks.append(chunk)
+            return {'ids': chunks, 'len': len(ids)}
         except Exception as e:
             logging.error(f"Ошибка обработки: {str(e)}")
             return {'ids': [], 'len': 0}
@@ -77,36 +91,30 @@ def prepare_data():
         output_path = os.path.join(OUTPUT_DIR, f'{split}.bin')
         logging.info(f"Обработка {split} раздела -> {output_path}")
 
-        # Расчет общего размера
-        lengths = [min(l, MAX_SEQ_LEN) for l in tokenized[split]['len']]
-        total_len = min(sum(lengths), MAX_TOKENS)
+        all_ids = []
+        current_tokens = 0
 
-        if total_len == 0:
-            logging.warning(f"{split} раздел пуст!")
-            continue
-
-        # Создание memmap файла
-        arr = np.memmap(
-            output_path,
-            dtype=np.uint16,
-            mode='w+',
-            shape=(total_len,))
-
-        # Постепенная запись
-        current_idx = 0
-        for example in tqdm(tokenized[split], desc=f"Запись {split}"):
-            if current_idx >= total_len:
+        for example in tqdm(tokenized[split], desc=f"Обработка {split}"):
+            if current_tokens >= MAX_TOKENS:
                 break
+            for chunk in example['ids']:
+                if current_tokens + len(chunk) > MAX_TOKENS:
+                    chunk = chunk[:MAX_TOKENS - current_tokens]
+                all_ids.extend(chunk)
+                current_tokens += len(chunk)
+                if current_tokens >= MAX_TOKENS:
+                    break
 
-            ids = np.array(example['ids'][:MAX_SEQ_LEN], dtype=np.uint16)
-            write_len = min(len(ids), total_len - current_idx)
-
-            if write_len > 0:
-                arr[current_idx:current_idx + write_len] = ids[:write_len]
-                current_idx += write_len
-
-        arr.flush()  # Форсированная запись на диск
-        logging.info(f"Сохранено {current_idx} токенов в {output_path}")
+        required_space = len(all_ids) * dtype().itemsize
+        free_space = psutil.disk_usage(OUTPUT_DIR).free
+        if required_space > free_space:
+            logging.error("Недостаточно места на диске")
+            return
+        # Сохранение в memmap
+        arr = np.memmap(output_path, dtype=dtype, mode='w+', shape=(len(all_ids),))
+        arr[:] = np.array(all_ids, dtype=dtype)
+        arr.flush()
+        logging.info(f"Сохранено {len(all_ids)} токенов")
     # Финализация
     logging.info("Обработка данных завершена!")
 
