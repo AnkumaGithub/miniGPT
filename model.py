@@ -21,8 +21,9 @@ class GPTConfig:
 class RotaryPositionalEmbeddings(nn.Module):
     def __init__(self, dim, max_seq_len=4096):
         super().__init__()
+        assert dim % 2 == 0 # dim должен быть чётным
         self.dim = dim
-        inv_freq = 1.0 / (10000 ** (torch.arange(0, dim, 2).float() / dim))
+        inv_freq = 1.0 / (10000 ** (torch.arange(0, dim, 2).float() / dim)) # Для sin и cos
         self.register_buffer("inv_freq", inv_freq, persistent=False)
 
     def rotate_half(self, x):
@@ -67,13 +68,14 @@ class CausalSelfAttention(nn.Module):
         k = k.view(B, T, self.n_head, self.head_dim).transpose(1, 2)
         v = v.view(B, T, self.n_head, self.head_dim).transpose(1, 2)
 
-        offset = past_key_values[0].size(2) if past_key_values else 0
+        if past_key_values is not None:
+            k_prev, v_prev = past_key_values
+            k = torch.cat([k_prev, k], dim=2)
+            v = torch.cat([v_prev, v], dim=2)
+
+        offset = k.size(2) - T
         q = self.rope(q, offset)
         k = self.rope(k, offset)
-
-        if past_key_values is not None:
-            k = torch.cat([past_key_values[0], k], dim=2)
-            v = torch.cat([past_key_values[1], v], dim=2)
         new_key_values = (k, v) if use_cache else None
 
         if self.flash:
@@ -87,8 +89,8 @@ class CausalSelfAttention(nn.Module):
         else:
             # Ручная реализация внимания с маской
             att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
-            causal_mask = self.bias[:T, :T].unsqueeze(0).unsqueeze(0).to(att.device)
-            att = att.masked_fill(causal_mask == 0, float('-inf'))
+            mask = torch.tril(torch.ones(T, k.size(2), device=x.device)).unsqueeze(0).unsqueeze(0)
+            att = att.masked_fill(mask == 0, float('-inf'))
             att = F.softmax(att, dim=-1)
             att = self.attn_dropout(att)
             y = att @ v
@@ -99,7 +101,6 @@ class CausalSelfAttention(nn.Module):
 
 class SwiGLU(nn.Module):
     def forward(self, x):
-        assert not torch.isnan(x).any(), "Обнаружены NaN в активациях"
         x, gate = x.chunk(2, dim=-1)
         return x * F.silu(gate)
 
@@ -116,19 +117,21 @@ class MLP(nn.Module):
         return self.dropout(self.c_proj(self.swiglu(self.c_fc(x))))
 
     def forward(self, x):
-        return checkpoint(self._forward_impl, x)
+        return checkpoint(lambda x: self._forward_impl(x), x)
 
 
 class DropPath(nn.Module):
-    def __init__(self, p):
+    def __init__(self, drop_prob):
         super().__init__()
-        self.p = p
+        if drop_prob < 0 or drop_prob >= 1:
+            raise ValueError('drop_prob should be in [0, 1)')
+        self.drop_prob = drop_prob
 
     def forward(self, x):
-        if self.training and self.p > 0:
+        if self.training and self.drop_prob > 0:
             mask_shape = (x.shape[0],) + (1,) * (x.ndim - 1)
-            mask = (torch.rand(*mask_shape) > self.p).to(x)
-            return x * mask / (1 - self.p)
+            mask = (torch.rand(*mask_shape, device=x.device) > self.drop_prob).to(dtype=x.dtype)
+            return x * mask / (1 - self.drop_prob)
         return x
 
 
@@ -142,9 +145,13 @@ class Block(nn.Module):
         self.drop_path = DropPath(config.drop_path_rate) if config.drop_path_rate > 0 else nn.Identity()
 
     def forward(self, x, past_key_values=None, use_cache=False):
-        attn_out, new_kv = self.attn(self.ln_1(x), past_key_values, use_cache)
-        x = x + self.drop_path(attn_out)
-        x = x + self.drop_path(self.mlp(self.ln_2(x)))
+        attn_out, new_kv = self.attn(self.ln_1(x), past_key_values, use_cache=True)
+        residual = x
+        x = self.ln_1(x)
+        x = residual + self.drop_path(self.attn(x, past_key_values, use_cache))
+        residual = x
+        x = self.ln_2(x)
+        x = residual + self.drop_path(self.mlp(x))
         return (x, new_kv) if use_cache else x
 
 
@@ -188,7 +195,7 @@ class GPT(nn.Module):
         for i, block in enumerate(self.transformer.h):
             past_kv = past_key_values[i] if past_key_values else None
             if use_cache:
-                x, kv = block(x, past_kv, use_cache)
+                x, kv = block(x, past_kv, use_cache=True)
                 new_key_values.append(kv)
             else:
                 x = block(x, past_kv, use_cache)
@@ -209,7 +216,7 @@ class GPT(nn.Module):
         ]
         return torch.optim.AdamW(params, lr=learning_rate)
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def generate(self, idx, max_new_tokens=100, temperature=1.0, top_k=None, stop_token=None, echo=None) -> torch.Tensor:
         self.eval()
         original_len = idx.size(1)
@@ -223,14 +230,11 @@ class GPT(nn.Module):
                 input_ids = idx[:, -1:]
 
             # Проверка превышения максимальной длины
-            if input_ids.size(1) + step > self.config.block_size:
-                keep_len = self.config.block_size - step - 1
+            current_length = input_ids.size(1) + (past_key_values[0][0].size(2) if past_key_values else 0)
+            if current_length >= self.config.block_size:
+                keep_len = self.config.block_size - 1
                 input_ids = input_ids[:, -keep_len:]
-                if past_key_values is not None:
-                    past_key_values = [
-                        (k[..., -keep_len:, :], v[..., -keep_len:, :])
-                        for (k, v) in past_key_values
-                    ]
+                past_key_values = [(k[..., -keep_len:, :], v[..., -keep_len:, :]) for (k, v) in past_key_values]
 
             # Прямой проход
             logits, new_key_values = self(
@@ -241,8 +245,10 @@ class GPT(nn.Module):
             past_key_values = new_key_values
 
             # Сэмплинг следующего токена
+            temperature = max(temperature, 1e-5)
             logits = logits[:, -1, :] / temperature
             if top_k is not None:
+                top_k = min(top_k, logits.size(-1)) # Ограничение top_k размером словаря
                 v, _ = torch.topk(logits, top_k)
                 logits[logits < v[:, [-1]]] = -float('Inf')
 
