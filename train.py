@@ -7,6 +7,9 @@ from model import GPT, GPTConfig
 import logging
 import os
 from comet_ml import Experiment
+from dotenv import load_dotenv
+
+load_dotenv(dotenv_path='.env') # Подгружаем секретные данные
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO,
@@ -38,9 +41,9 @@ class GPTDataset(Dataset):
 def train():
     # Инициализация Comet ML
     experiment = Experiment(
-        api_key=os.getenv("COMET_API_KEY"),  # Позже добавлю venv
-        project_name="gpt-training",
-        workspace="your-workspace",
+        api_key=os.getenv(COMET_API_KEY=os.getenv("COMET_API_KEY")),
+        project_name="minigpt",
+        workspace="ankumagithub",
         auto_param_logging=False,
         disabled=False
     )
