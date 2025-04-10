@@ -117,8 +117,16 @@ class MLP(nn.Module):
         return self.dropout(self.c_proj(self.swiglu(self.c_fc(x))))
 
     def forward(self, x):
-        return checkpoint(lambda x: self._forward_impl(x), x)
+        return checkpoint(self._forward_impl, x, use_reentrant=False)
 
+class LayerNorm(nn.Module):
+    def __init__(self, ndim, bias):
+        super().__init__()
+        self.weight = nn.Parameter(torch.ones(ndim))
+        self.bias = nn.Parameter(torch.zeros(ndim)) if bias else None
+
+    def forward(self, input):
+        return F.layer_norm(input, self.weight.shape, self.weight, self.bias, 1e-5)
 
 class DropPath(nn.Module):
     def __init__(self, drop_prob):
@@ -138,20 +146,25 @@ class DropPath(nn.Module):
 class Block(nn.Module):
     def __init__(self, config):
         super().__init__()
-        self.ln_1 = nn.LayerNorm(config.n_embd, bias=config.bias)
+        self.ln_1 = LayerNorm(config.n_embd, bias=config.bias)
         self.attn = CausalSelfAttention(config)
-        self.ln_2 = nn.LayerNorm(config.n_embd, bias=config.bias)
+        self.ln_2 = LayerNorm(config.n_embd, bias=config.bias)
         self.mlp = MLP(config)
         self.drop_path = DropPath(config.drop_path_rate) if config.drop_path_rate > 0 else nn.Identity()
 
     def forward(self, x, past_key_values=None, use_cache=False):
-        attn_out, new_kv = self.attn(self.ln_1(x), past_key_values, use_cache=True)
+        # Attention block
         residual = x
         x = self.ln_1(x)
-        x = residual + self.drop_path(self.attn(x, past_key_values, use_cache))
+        attn_out, new_kv = self.attn(x, past_key_values, use_cache)
+        x = residual + self.drop_path(attn_out)
+
+        # MLP block
         residual = x
         x = self.ln_2(x)
-        x = residual + self.drop_path(self.mlp(x))
+        mlp_out = self.mlp(x)
+        x = residual + self.drop_path(mlp_out)
+
         return (x, new_kv) if use_cache else x
 
 
@@ -205,14 +218,17 @@ class GPT(nn.Module):
         return (logits, new_key_values) if use_cache else logits
 
     def configure_optimizers(self, weight_decay=0.1, learning_rate=3e-4):
-        decay = set()
-        no_decay = {'bias', 'LayerNorm.weight'}
+        no_decay = {"bias"}
+        # Добавляем веса всех LayerNorm
+        for name, _ in self.named_parameters():
+            if "ln" in name and name.endswith(".weight"):
+                no_decay.add(name)
 
         params = [
-            {'params': [p for n, p in self.named_parameters() if p.requires_grad and any(nd in n for nd in no_decay)],
-             'weight_decay': 0.0},
-            {'params': [p for n, p in self.named_parameters() if
-                        p.requires_grad and not any(nd in n for nd in no_decay)], 'weight_decay': weight_decay}
+            {"params": [p for n, p in self.named_parameters() if p.requires_grad and n in no_decay],
+             "weight_decay": 0.0},
+            {"params": [p for n, p in self.named_parameters() if p.requires_grad and n not in no_decay],
+             "weight_decay": weight_decay},
         ]
         return torch.optim.AdamW(params, lr=learning_rate)
 
@@ -221,9 +237,8 @@ class GPT(nn.Module):
         self.eval()
         original_len = idx.size(1)
         past_key_values = None
-        generated = []
 
-        for step in range(max_new_tokens):
+        for _ in range(max_new_tokens):
             if past_key_values is None:
                 input_ids = idx
             else:
@@ -245,8 +260,7 @@ class GPT(nn.Module):
             past_key_values = new_key_values
 
             # Сэмплинг следующего токена
-            temperature = max(temperature, 1e-5)
-            logits = logits[:, -1, :] / temperature
+            logits = logits[:, -1, :] / max(temperature, 1e-5)
             if top_k is not None:
                 top_k = min(top_k, logits.size(-1)) # Ограничение top_k размером словаря
                 v, _ = torch.topk(logits, top_k)
@@ -254,15 +268,14 @@ class GPT(nn.Module):
 
             probs = F.softmax(logits, dim=-1)
             idx_next = torch.multinomial(probs, num_samples=1)
-            generated.append(idx_next)
+            idx = torch.cat([idx, idx_next], dim=1)
 
             # Остановка по токену
             if stop_token is not None and idx_next.item() == stop_token:
                 break
 
         # Сборка полной последовательности
-        generated = torch.cat(generated, dim=1)
-        full_sequence = torch.cat([idx, generated], dim=1) if echo else generated
+        full_sequence = idx if echo else idx[:, original_len:]
 
         # Обрезка до исходной максимальной длины + новых токенов
         return full_sequence[:, :original_len + max_new_tokens]
