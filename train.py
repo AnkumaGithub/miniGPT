@@ -57,15 +57,14 @@ def train():
         auto_param_logging=False,
         disabled=False
     )
-    # Конфигурация для RTX 3060
+    # Конфигурация для RTX 3060 ~ 220M
     config = GPTConfig(
-        block_size=1024,
         vocab_size=50257,
-        n_layer=12,  # Увеличение глубины модели
-        n_head=12,  # 12 голов внимания
-        n_embd=768,  # Размер эмбеддинга
-        dropout=0.1,  # Регуляризация
-        drop_path_rate=0.1,
+        n_layer=18,
+        n_head=16,
+        n_embd=896,
+        dropout=0.15,
+        drop_path_rate=0.15,
         bias=False
     )
 
@@ -103,7 +102,7 @@ def train():
             num_workers = min(8, os.cpu_count() // 2)
             train_loader = DataLoader(
                 GPTDataset('train', config.block_size),
-                batch_size=32,
+                batch_size=24,
                 shuffle=True,
                 num_workers=num_workers,
                 pin_memory=True,
@@ -111,7 +110,7 @@ def train():
             )
             val_loader = DataLoader(
                 GPTDataset('val', config.block_size),
-                batch_size=32,
+                batch_size=24,
                 num_workers=8,
                 pin_memory=True,
                 persistent_workers=True
