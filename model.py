@@ -9,7 +9,7 @@ from dataclasses import dataclass
 @dataclass
 class GPTConfig:
     block_size: int = 1024
-    vocab_size: int = 50304
+    vocab_size: int = 50257
     n_layer: int = 6
     n_head: int = 8
     n_embd: int = 256
@@ -19,11 +19,12 @@ class GPTConfig:
 
 
 class RotaryPositionalEmbeddings(nn.Module):
-    def __init__(self, dim, max_seq_len=4096):
+    def __init__(self, head_dim, max_seq_len=4096):
         super().__init__()
-        assert dim % 2 == 0 # dim должен быть чётным
-        self.dim = dim
-        inv_freq = 1.0 / (10000 ** (torch.arange(0, dim, 2).float() / dim)) # Для sin и cos
+        assert head_dim % 2 == 0 # dim должен быть чётным
+        self.head_dim = head_dim
+        # [dim // 2]
+        inv_freq = 1.0 / (10000 ** (torch.arange(0, head_dim, 2).float() / head_dim)) # Для sin и cos
         self.register_buffer("inv_freq", inv_freq, persistent=False)
 
     def rotate_half(self, x):
@@ -31,13 +32,14 @@ class RotaryPositionalEmbeddings(nn.Module):
         return torch.cat((-x2, x1), dim=-1)
 
     def forward(self, x, offset=0):
-        seq_len = x.size(-2)
+        seq_len = x.size(-2) # Длина текущего фрагмента последовательности
+        # Глобальные позиции токенов [1, seq_len, 1]
         t = torch.arange(offset, offset + seq_len, dtype=self.inv_freq.dtype, device=x.device).unsqueeze(0).unsqueeze(-1)
-        freqs = t * self.inv_freq
-        emb = torch.cat((freqs, freqs), dim=-1)
-        cos = emb.cos().view(1, seq_len, 1, self.dim)
-        sin = emb.sin().view(1, seq_len, 1, self.dim)
-        return (x * cos) + (self.rotate_half(x) * sin)
+        freqs = t * self.inv_freq # [1, seq_len, D//2]
+        emb = torch.cat((freqs, freqs), dim=-1) #[1, seq_len, D]
+        cos = emb.cos().unsqueeze(1) # [1, 1, seq_len, D]
+        sin = emb.sin().unsqueeze(1)
+        return (x * cos) + (self.rotate_half(x) * sin) #[B, n_head, seq_len, D]
 
 
 class CausalSelfAttention(nn.Module):
@@ -49,7 +51,7 @@ class CausalSelfAttention(nn.Module):
         self.head_dim = config.n_embd // config.n_head
 
         self.rope = RotaryPositionalEmbeddings(self.head_dim)
-        self.c_attn = nn.Linear(config.n_embd, 3 * config.n_embd, bias=config.bias)
+        self.c_attn = nn.Linear(config.n_embd, 3 * config.n_embd, bias=config.bias) # преобразовываем в q k v
         self.c_proj = nn.Linear(config.n_embd, config.n_embd, bias=config.bias)
         self.attn_dropout = nn.Dropout(config.dropout)
         self.resid_dropout = nn.Dropout(config.dropout)
@@ -60,22 +62,23 @@ class CausalSelfAttention(nn.Module):
                                  persistent=False)
 
     def forward(self, x, past_key_values=None, use_cache=False):
-        B, T, C = x.size()
-        qkv = self.c_attn(x)
+        B, T, C = x.size() # Batch, seq_len, emb_dim
+        qkv = self.c_attn(x) # проецируем x в qkv с linear
         q, k, v = qkv.split(self.n_embd, dim=2)
 
-        q = q.view(B, T, self.n_head, self.head_dim).transpose(1, 2)
+        q = q.view(B, T, self.n_head, self.head_dim).transpose(1, 2) # Разделяем для голов
         k = k.view(B, T, self.n_head, self.head_dim).transpose(1, 2)
         v = v.view(B, T, self.n_head, self.head_dim).transpose(1, 2)
-
-        if past_key_values is not None:
+        # q k v - [Batch, n_head, seq_len, head_dim] тк emb_dim = n_head * head_dim
+        if past_key_values is not None: # Складываем кэш
             k_prev, v_prev = past_key_values
             k = torch.cat([k_prev, k], dim=2)
             v = torch.cat([v_prev, v], dim=2)
 
-        offset = k.size(2) - T
-        q = self.rope(q, offset)
-        k = self.rope(k, offset)
+        offset = k.size(2) - T # Если есть kv то k-size() - T скажет с какой позиции обрабатывать
+        with torch.cuda.amp.autocast(enabled=False):  # Для стабильности ротаций
+            q = self.rope(q, offset) #[query, offset]
+            k = self.rope(k, offset) #[keys, offset]
         new_key_values = (k, v) if use_cache else None
 
         if self.flash:
@@ -89,7 +92,10 @@ class CausalSelfAttention(nn.Module):
         else:
             # Ручная реализация внимания с маской
             att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
-            mask = torch.tril(torch.ones(T, k.size(2), device=x.device)).unsqueeze(0).unsqueeze(0)
+            mask = torch.tril(
+                torch.ones(T, T + (past_key_values[0].size(2) if past_key_values else 0), device=x.device))
+            mask = mask[:, -k.size(2):]  # Обрезаем до актуальной длины ключей
+            mask = mask.unsqueeze(0).unsqueeze(0)
             att = att.masked_fill(mask == 0, float('-inf'))
             att = F.softmax(att, dim=-1)
             att = self.attn_dropout(att)
@@ -180,13 +186,13 @@ class GPT(nn.Module):
             ln_f=nn.LayerNorm(config.n_embd, bias=config.bias),
         ))
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
-        self.transformer.wte.weight = self.lm_head.weight
+        self.lm_head.weight = nn.Parameter(self.transformer.wte.weight.clone())
 
         self.apply(self._init_weights)
 
     def _init_weights(self, module):
         if isinstance(module, nn.Linear):
-            nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            nn.init.xavier_normal_(module.weight, gain=1.0)
             if module.bias is not None:
                 nn.init.zeros_(module.bias)
         elif isinstance(module, nn.Embedding):
@@ -221,7 +227,7 @@ class GPT(nn.Module):
         no_decay = {"bias"}
         # Добавляем веса всех LayerNorm
         for name, _ in self.named_parameters():
-            if "ln" in name and name.endswith(".weight"):
+            if ("ln" in name.split('.')[-2]) and name.endswith(".weight"):
                 no_decay.add(name)
 
         params = [
