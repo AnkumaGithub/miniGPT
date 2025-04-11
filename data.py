@@ -12,8 +12,6 @@ logging.basicConfig(level=logging.INFO,
 
 
 def prepare_data():
-    """Основная функция обработки данных с жестко заданными параметрами"""
-
     # Конфигурация
     OUTPUT_DIR = "./data/openwebtext"  # Выходная директория
     NUM_PROC = 8  # Количество процессов обработки
@@ -65,7 +63,8 @@ def prepare_data():
             chunks = []
             for i in range(0, len(ids), MAX_SEQ_LEN):
                 chunk = ids[i:i + MAX_SEQ_LEN]
-                chunks.append(chunk)
+                if len(chunk) >= MIN_TEXT_LENGTH:  # Иначе короткие чанки попадут в данные
+                    chunks.append(chunk)
             return {'ids': chunks, 'len': len(ids)}
         except Exception as e:
             logging.error(f"Ошибка обработки: {str(e)}")
