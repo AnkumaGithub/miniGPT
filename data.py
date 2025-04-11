@@ -16,11 +16,12 @@ def prepare_data():
     OUTPUT_DIR = "./data/openwebtext"  # Выходная директория
     NUM_PROC = 8  # Количество процессов обработки
     NUM_PROC_LOAD = 4  # Процессов для загрузки
-    VAL_RATIO = 0.005  # Доля валидации
+    VAL_RATIO = 0.05  # Доля валидации
     SEED = 42  # Сид для воспроизводимости
-    MAX_TOKENS = 1_000_000_000  # Максимум токенов (1B)
+    MAX_TOKENS = 2_000_000_000  # Максимум токенов (1B)
     MAX_SEQ_LEN = 1024  # Макс длина последовательности
     ENCODING = "gpt2"  # Название токенизатора
+    MIN_SEQ_LENGTH = 64
     MIN_TEXT_LENGTH = 64
 
     os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -63,11 +64,12 @@ def prepare_data():
             chunks = []
             for i in range(0, len(ids), MAX_SEQ_LEN):
                 chunk = ids[i:i + MAX_SEQ_LEN]
-                if len(chunk) >= MIN_TEXT_LENGTH:  # Иначе короткие чанки попадут в данные
+                if len(chunk) >= MIN_SEQ_LENGTH:  # Иначе короткие чанки попадут в данные
                     chunks.append(chunk)
             return {'ids': chunks, 'len': len(ids)}
         except Exception as e:
-            logging.error(f"Ошибка обработки: {str(e)}")
+            sample = example['text'][:50] + '...' if example['text'] else 'Empty'
+            logging.error(f"Ошибка в тексте: '{sample}' -> {str(e)}")
             return {'ids': [], 'len': 0}
 
     # Токенизация
@@ -86,34 +88,43 @@ def prepare_data():
         return
 
     # Сохранение в бинарный формат
+    # Сохранение с прямой записью в memmap
     for split in ['train', 'val']:
         output_path = os.path.join(OUTPUT_DIR, f'{split}.bin')
-        logging.info(f"Обработка {split} раздела -> {output_path}")
+        logging.info(f"Обработка {split} -> {output_path}")
 
-        all_ids = []
-        current_tokens = 0
+        # Создаем memmap файл сразу
+        arr = np.memmap(output_path, dtype=dtype, mode='w+', shape=(MAX_TOKENS,)) # Может занять много места, 1B это ~ 2gb
+        current_idx = 0
 
+        pbar = tqdm(total=MAX_TOKENS, desc="Запись токенов")
         for example in tqdm(tokenized[split], desc=f"Обработка {split}"):
-            if current_tokens >= MAX_TOKENS:
+            if current_idx >= MAX_TOKENS:
                 break
             for chunk in example['ids']:
-                if current_tokens + len(chunk) > MAX_TOKENS:
-                    chunk = chunk[:MAX_TOKENS - current_tokens]
-                all_ids.extend(chunk)
-                current_tokens += len(chunk)
-                if current_tokens >= MAX_TOKENS:
-                    break
+                chunk_len = len(chunk)
+                if current_idx + chunk_len > MAX_TOKENS:
+                    chunk_len = MAX_TOKENS - current_idx
+                    chunk = chunk[:chunk_len]
 
-        required_space = len(all_ids) * dtype().itemsize
-        free_space = psutil.disk_usage(OUTPUT_DIR).free
-        if required_space > free_space:
-            logging.error("Недостаточно места на диске")
-            return
-        # Сохранение в memmap
-        arr = np.memmap(output_path, dtype=dtype, mode='w+', shape=(len(all_ids),))
-        arr[:] = np.array(all_ids, dtype=dtype)
+                arr[current_idx:current_idx + chunk_len] = chunk
+                current_idx += chunk_len
+                if current_idx >= MAX_TOKENS:
+                    break
+                pbar.update(chunk_len)
+
+        # Обрезаем файл до реального размера
+        pbar.close()
+        arr = arr[:current_idx]
         arr.flush()
-        logging.info(f"Сохранено {len(all_ids)} токенов")
+        del arr  # Закрытие memmap
+
+        # Валидация
+        test_arr = np.memmap(output_path, dtype=dtype, mode='r')
+        assert len(test_arr) == current_idx, "Несоответствие размера файла!"
+        del test_arr
+        logging.info(f"Сохранено {current_idx} токенов")
+        logging.info(f"Использовано RAM: {psutil.Process().memory_info().rss / 1e9:.2f} GB")
     # Финализация
     logging.info("Обработка данных завершена!")
 
