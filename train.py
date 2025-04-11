@@ -17,7 +17,7 @@ logging.basicConfig(level=logging.INFO,
 
 class GPTDataset(Dataset):
     def __init__(self, split, block_size):
-        self.data_path = f'./data/processed/{split}.bin'
+        self.data_path = f'./data/openwebtext/{split}.bin'
         if not os.path.exists(self.data_path):
             raise FileNotFoundError(f"Data file {self.data_path} not found")
 
@@ -60,7 +60,7 @@ def train():
     # Конфигурация для RTX 3060
     config = GPTConfig(
         block_size=1024,
-        vocab_size=50258,
+        vocab_size=50257,
         n_layer=6,
         n_head=8,
         n_embd=256,
