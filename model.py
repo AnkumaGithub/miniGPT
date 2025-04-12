@@ -9,11 +9,12 @@ from dataclasses import dataclass
 @dataclass
 class GPTConfig:
     vocab_size: int = 50257
-    n_layer: int = 8
+    n_layer: int = 6
     n_head: int = 8
-    n_embd: int = 512
-    block_size: int = 512
-    batch_size: int = 24
+    n_embd: int = 256
+    block_size: int = 1024
+    batch_size: int = 12
+    lr: float = 2e-4
     dropout: float = 0.1
     drop_path_rate: float = 0.1
     bias: bool = False  # Можно включить если нужно
@@ -77,7 +78,7 @@ class CausalSelfAttention(nn.Module):
             v = torch.cat([v_prev, v], dim=2)
 
         offset = k.size(2) - T # Если есть kv то k-size() - T скажет с какой позиции обрабатывать
-        with torch.cuda.amp.autocast(enabled=False):  # Для стабильности ротаций
+        with torch.amp.autocast(device_type='cuda', enabled=False):   # Для стабильности ротаций
             q = self.rope(q, offset) #[query, offset]
             k = self.rope(k, offset) #[keys, offset]
         new_key_values = (k, v) if use_cache else None
