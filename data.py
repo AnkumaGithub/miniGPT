@@ -13,9 +13,9 @@ logging.basicConfig(level=logging.INFO,
 
 def prepare_data():
     # Конфигурация
-    OUTPUT_DIR = "./data/openwebtext"  # Выходная директория
-    NUM_PROC = 8  # Количество процессов обработки
-    NUM_PROC_LOAD = 4  # Процессов для загрузки
+    OUTPUT_DIR = "E:/PyCharm 2024.3.5/projects/data/openwebtext"  # Выходная директория
+    NUM_PROC = 4  # Количество процессов обработки
+    NUM_PROC_LOAD = 2  # Процессов для загрузки
     VAL_RATIO = 0.05  # Доля валидации
     SEED = 42  # Сид для воспроизводимости
     MAX_TOKENS = 1_000_000_000  # Максимум токенов (1B)
@@ -23,6 +23,7 @@ def prepare_data():
     ENCODING = "gpt2"  # Название токенизатора
     MIN_SEQ_LENGTH = 64
     MIN_TEXT_LENGTH = 64
+    VAL_TOKENS = MAX_TOKENS * VAL_RATIO
 
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     # Инициализация токенизатора
@@ -36,7 +37,7 @@ def prepare_data():
     # Загрузка датасета
     logging.info("Загрузка OpenWebText...")
     try:
-        dataset = load_dataset("Skylion007/openwebtext", num_proc=NUM_PROC_LOAD)
+        dataset = load_dataset("Skylion007/openwebtext", num_proc=NUM_PROC_LOAD, trust_remote_code=True)
     except Exception as e:
         logging.error(f"Ошибка загрузки датасета: {str(e)}")
         return
@@ -90,34 +91,42 @@ def prepare_data():
     # Сохранение в бинарный формат
     # Сохранение с прямой записью в memmap
     for split in ['train', 'val']:
+        if split == 'train':
+            max_split_tokens = MAX_TOKENS
+        else:
+            max_split_tokens = VAL_TOKENS
         output_path = os.path.join(OUTPUT_DIR, f'{split}.bin')
+        if os.path.exists(output_path):
+            logging.info(f"Файл {split}.bin уже существует. Пропускаем.")
+            continue
+
         logging.info(f"Обработка {split} -> {output_path}")
 
-        # Создаем memmap файл сразу
-        arr = np.memmap(output_path, dtype=dtype, mode='w+', shape=(MAX_TOKENS,)) # Может занять много места, 1B это ~ 2gb
+        # Создаем memmap файл
+        arr = np.memmap(output_path, dtype=dtype, mode='w+', shape=(max_split_tokens,))
         current_idx = 0
 
         pbar = tqdm(total=MAX_TOKENS, desc="Запись токенов")
-        for example in tokenized[split]:
-            if current_idx >= MAX_TOKENS:
-                break
-            for chunk in example['ids']:
-                chunk_len = len(chunk)
-                if current_idx + chunk_len > MAX_TOKENS:
-                    chunk_len = MAX_TOKENS - current_idx
-                    chunk = chunk[:chunk_len]
-
-                arr[current_idx:current_idx + chunk_len] = chunk
-                current_idx += chunk_len
+        try:
+            for example in tokenized[split]:
                 if current_idx >= MAX_TOKENS:
                     break
-                pbar.update(chunk_len)
+                for chunk in example['ids']:
+                    chunk_len = len(chunk)
+                    if current_idx + chunk_len > MAX_TOKENS:
+                        chunk_len = MAX_TOKENS - current_idx
+                        chunk = chunk[:chunk_len]
 
-        # Обрезаем файл до реального размера
-        pbar.close()
-        arr = arr[:current_idx]
-        arr.flush()
-        del arr  # Закрытие memmap
+                    arr[current_idx:current_idx + chunk_len] = chunk
+                    current_idx += chunk_len
+                    pbar.update(chunk_len)
+        except Exception as e:
+            logging.error(f"Ошибка записи: {str(e)}")
+        finally:
+            pbar.close()
+            arr = arr[:current_idx]
+            arr.flush()
+            del arr
 
         # Валидация
         test_arr = np.memmap(output_path, dtype=dtype, mode='r')

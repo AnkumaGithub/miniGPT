@@ -163,5 +163,5 @@ cython_debug/
 #.idea/
 
 !/field.py
-!/field.py
+!/ggfield.py
 !/newfield.py
