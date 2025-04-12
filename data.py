@@ -98,7 +98,7 @@ def prepare_data():
         current_idx = 0
 
         pbar = tqdm(total=MAX_TOKENS, desc="Запись токенов")
-        for example in tqdm(tokenized[split], desc=f"Обработка {split}"):
+        for example in tokenized[split]:
             if current_idx >= MAX_TOKENS:
                 break
             for chunk in example['ids']:
