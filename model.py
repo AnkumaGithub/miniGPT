@@ -7,14 +7,15 @@ from dataclasses import dataclass
 
 
 @dataclass
-class GPTConfig: #220M
-    vocab_size = 50257,
-    n_layer = 18,
-    n_head = 16,
-    n_embd = 896,
-    dropout = 0.15,
-    drop_path_rate = 0.15,
-    bias = False
+class GPTConfig:
+    vocab_size: int = 50257,
+    n_layer: int = 8,
+    n_head: int = 8,
+    n_embd: int = 512,
+    block_size: int = 512,
+    batch_size: int = 24,
+    dropout: float = 0.1,
+    drop_path_rate: float = 0.1,
     bias: bool = False  # Можно включить если нужно
 
 

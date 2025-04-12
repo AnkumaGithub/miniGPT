@@ -57,14 +57,16 @@ def train():
         auto_param_logging=False,
         disabled=False
     )
-    # Конфигурация для RTX 3060 ~ 220M
+    # Конфигурация для RTX 3060
     config = GPTConfig(
         vocab_size=50257,
-        n_layer=18,
-        n_head=16,
-        n_embd=896,
-        dropout=0.15,
-        drop_path_rate=0.15,
+        block_size = 512,
+        n_layer=8,
+        n_head=8,
+        n_embd=512,
+        dropout=0.1,
+        drop_path_rate=0.1,
+        batch_size = 24,
         bias=False
     )
 
@@ -75,8 +77,9 @@ def train():
         "n_head": config.n_head,
         "n_embd": config.n_embd,
         "dropout": config.dropout,
+        "drop_path_rate": config.drop_path_rate,
         "lr": 3e-4,
-        "batch_size": 8
+        "batch_size": config.batch_size
     })
 
     try:
@@ -102,7 +105,7 @@ def train():
             num_workers = min(8, os.cpu_count() // 2)
             train_loader = DataLoader(
                 GPTDataset('train', config.block_size),
-                batch_size=24,
+                batch_size=config.batch_size,
                 shuffle=True,
                 num_workers=num_workers,
                 pin_memory=True,
@@ -110,7 +113,7 @@ def train():
             )
             val_loader = DataLoader(
                 GPTDataset('val', config.block_size),
-                batch_size=24,
+                batch_size=config.batch_size,
                 num_workers=8,
                 pin_memory=True,
                 persistent_workers=True
@@ -128,7 +131,7 @@ def train():
                                       fused=fused_available)
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
             optimizer,
-            T_max=len(train_loader) * 20, # Полный цикл на 20 эпох
+            T_max=len(train_loader),
             eta_min=3e-5
         )
 
@@ -143,7 +146,7 @@ def train():
 
         global_step = 0
 
-        for epoch in range(start_epoch, 20):
+        for epoch in range(start_epoch, 5):
             try:
                 model.train()
                 total_loss = 0
