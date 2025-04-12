@@ -62,7 +62,7 @@ def test_dataloader(mock_dataset):
 
 
 @patch('train.Experiment')
-@patch('torch.cuda.is_available', return_value=False)
+@patch('torch.cuda.is_available', return_value=True)
 def test_training_step(mock_cuda, mock_experiment, mock_config, mock_dataset):
     experiment_mock = Mock()
     mock_experiment.return_value = experiment_mock
