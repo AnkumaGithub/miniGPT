@@ -1,12 +1,14 @@
+from comet_ml import Experiment
+import comet_ml
 import torch
 import numpy as np
 from tqdm import tqdm
 from torch.utils.data import Dataset, DataLoader
-from torch.cuda.amp import autocast, GradScaler
+from torch.amp import autocast, GradScaler
 from model import GPT, GPTConfig
 import logging
 import os
-from comet_ml import Experiment
+import psutil
 from dotenv import load_dotenv
 
 load_dotenv(dotenv_path='.env') # Подгружаем секретные данные
@@ -16,27 +18,48 @@ logging.basicConfig(level=logging.INFO,
                     format='%(asctime)s - %(levelname)s - %(message)s')
 
 class GPTDataset(Dataset):
-    def __init__(self, split, block_size):
-        self.data_path = f'./data/openwebtext/{split}.bin'
+    def __init__(self, split, block_size, stride=256):
+        self.data_path = f'E:/PyCharm 2024.3.5/projects/data/openwebtext/{split}.bin'
         if not os.path.exists(self.data_path):
             raise FileNotFoundError(f"Data file {self.data_path} not found")
 
         self.data = np.memmap(self.data_path, dtype=np.uint16, mode='r')
         self.block_size = block_size
-        self.total_samples = len(self.data) - block_size
+        self.stride = stride
+        self.total_samples = (len(self.data) - block_size) // stride + 1
 
     def __len__(self):
         return self.total_samples
 
     def __getitem__(self, idx):
-        start = idx
+        start = idx * self.stride  # Учитываем шаг между примерами
         end = start + self.block_size + 1
         if end > len(self.data):
-            raise IndexError("Index out of data range")
+            raise IndexError(f"Index {idx} out of data range (start={start}, end={end})")
 
-        chunk = torch.from_numpy(self.data[start:end].astype(np.int64))
+        chunk = torch.from_numpy(self.data[start:end].astype(np.int32)).long()
         return chunk[:-1], chunk[1:]
 
+
+def log_memory_usage(experiment, step):
+    # RAM
+    process = psutil.Process(os.getpid())
+    ram_usage = process.memory_info().rss / 1e9  # В гигабайтах
+
+    # GPU
+    gpu_usage = {}
+    if torch.cuda.is_available():
+        gpu_usage = {
+            "gpu_mem_allocated": torch.cuda.memory_allocated() / 1e9,
+            "gpu_mem_reserved": torch.cuda.memory_reserved() / 1e9,
+            "gpu_mem_max_allocated": torch.cuda.max_memory_allocated() / 1e9
+        }
+
+    # Логирование в Comet
+    metrics = {"ram_usage": ram_usage}
+    if torch.cuda.is_available():
+        metrics.update(gpu_usage)
+    experiment.log_metrics(metrics, step=step)
 
 def log_gradients(model, experiment, step):
     grad_data = {}
@@ -60,13 +83,14 @@ def train():
     # Конфигурация для RTX 3060
     config = GPTConfig(
         vocab_size=50257,
-        block_size = 512,
-        n_layer=8,
+        block_size = 1024,
+        n_layer=6,
         n_head=8,
-        n_embd=512,
+        n_embd=256,
         dropout=0.1,
         drop_path_rate=0.1,
-        batch_size = 24,
+        batch_size = 12,
+        lr = 2e-4,
         bias=False
     )
 
@@ -78,7 +102,7 @@ def train():
         "n_embd": config.n_embd,
         "dropout": config.dropout,
         "drop_path_rate": config.drop_path_rate,
-        "lr": 3e-4,
+        "lr": config.lr,
         "batch_size": config.batch_size
     })
 
@@ -91,47 +115,52 @@ def train():
             raise RuntimeError("CUDA is not available")
 
         # PyTorch 2.0+
-        if torch.__version__ >= "2.0.0":
-            model = torch.compile(model, mode="max-autotune")
-            print("Модель компилируется с torch.compile()")
-        else:
-            print("Обновись до torch 2.0")
+        #if torch.__version__ >= "2.0.0":
+            #model = torch.compile(model, mode="default") # Triton не работает у меня(
+            #print("Модель компилируется с torch.compile()")
+        #else:
+            #print("Обновись до torch 2.0")
 
         torch.backends.cuda.matmul.allow_tf32 = True  # Для тензорных ядер
         torch.backends.cudnn.allow_tf32 = True
 
         # DataLoader с проверкой данных
         try:
-            num_workers = min(8, os.cpu_count() // 2)
+            num_workers = min(2, os.cpu_count() // 4)
+            print("DataLoader-train-start")
             train_loader = DataLoader(
-                GPTDataset('train', config.block_size),
+                GPTDataset('train', config.block_size, stride=256),
                 batch_size=config.batch_size,
                 shuffle=True,
                 num_workers=num_workers,
-                pin_memory=True,
+                pin_memory=False,
                 persistent_workers=True
             )
+            print("DataLoader-train-end")
+            print("DataLoader-val-start")
             val_loader = DataLoader(
-                GPTDataset('val', config.block_size),
+                GPTDataset('val', config.block_size, stride=256),
                 batch_size=config.batch_size,
-                num_workers=8,
-                pin_memory=True,
+                num_workers=num_workers,
+                pin_memory=False,
                 persistent_workers=True
             )
+            print("DataLoader-val-start")
         except Exception as e:
             logging.error(f"Ошибка загрузки данных: {str(e)}")
             return
 
         # Оптимизатор и скейлер
-        scaler = GradScaler()
+        scaler = torch.amp.GradScaler(device='cuda')
         fused_available = hasattr(torch.optim, 'fused_adam')
         optimizer = torch.optim.AdamW(model.parameters(),
-                                      lr=3e-4,
-                                      weight_decay=0.1,
+                                      lr=config.lr,
+                                      weight_decay=0.03,
                                       fused=fused_available)
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
             optimizer,
-            T_max=len(train_loader),
+            T_0=len(train_loader),
+            T_mult=1,
             eta_min=3e-5
         )
 
@@ -145,19 +174,21 @@ def train():
             logging.info(f"Загружен чекпоинт эпохи {checkpoint['epoch']}")
 
         global_step = 0
-
+        print("epochs-start")
         for epoch in range(start_epoch, 5):
+            torch.cuda.reset_peak_memory_stats()
+            iter_step = 0
             try:
                 model.train()
                 total_loss = 0
 
                 train_iter = tqdm(train_loader, desc=f"Epoch {epoch + 1}")
                 for X, Y in train_iter:
-                    X, Y = X.to('cuda', non_blocking=True), Y.to('cuda', non_blocking=True)
+                    X, Y = X.to('cuda', non_blocking=True, dtype=torch.long), Y.to('cuda', non_blocking=True, dtype=torch.long)
 
                     optimizer.zero_grad(set_to_none=True)
 
-                    with autocast():
+                    with autocast(device_type='cuda', dtype=torch.float16):
                         logits = model(X)
                         loss = torch.nn.functional.cross_entropy(
                             logits.view(-1, logits.size(-1)),
@@ -166,25 +197,12 @@ def train():
 
                     scaler.scale(loss).backward()
 
-                    if global_step % 100 == 0:
+                    if iter_step % 100 == 0:
                         log_gradients(model, experiment, global_step)
-                        grad_norms = [torch.norm(p.grad.detach(), 2).item()
-                                      for p in model.parameters()
-                                      if p.grad is not None]
+                        log_memory_usage(experiment, global_step)
 
-                        if grad_norms:  # Защита от пустого списка
-                            avg_norm = np.mean(grad_norms)
-                            max_norm = np.max(grad_norms)
-
-                            experiment.log_metrics({
-                                "grad/avg_norm": avg_norm,
-                                "grad/max_norm": max_norm
-                            }, step=global_step)
-                            if max_norm > 1e5:
-                                logging.error(f"Exploding gradients detected! Max norm: {max_norm:.2f}")
-                        else:
-                            logging.warning("No gradients found!")
                     train_iter.set_postfix(loss=loss.item(), lr=scheduler.get_last_lr()[0])
+                    iter_step += 1
 
                     # Gradient Clipping
                     scaler.unscale_(optimizer)
@@ -229,13 +247,12 @@ def train():
                 }, step=global_step
                 )
 
-                if epoch % 5 == 0:
-                    for name, param in model.named_parameters():
-                        experiment.log_histogram_3d(
-                            values=param.data.cpu().numpy().flatten(),
-                            name=f"weights/{name}",
-                            step=global_step
-                        )
+                for name, param in model.named_parameters():
+                    experiment.log_histogram_3d(
+                        values=param.data.cpu().numpy().flatten(),
+                        name=f"weights/{name}",
+                        step=epoch + 1
+                    )
 
                 # чекпоинт
                 checkpoint = {
