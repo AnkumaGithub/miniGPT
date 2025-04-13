@@ -19,7 +19,12 @@ config = GPTConfig(
 #CHECKPOINT_PATH = f"latest_checkpoint_{config.mode}.pth"  # путь до чекпоинта
 CHECKPOINT_PATH = f"E:\PyCharm 2024.3.5\projects\saves\_latest_checkpoint_{config.mode}.pth"  # путь до чекпоинта
 ENCODING = "gpt2"
-DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
+if torch.cuda.is_available():
+    DEVICE = 'cuda'
+elif torch.backends.mps.is_available():
+    DEVICE = 'mps'
+else:
+    DEVICE = 'cpu'
 
 
 model = GPT(config).to(DEVICE)
