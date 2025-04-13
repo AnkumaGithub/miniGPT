@@ -7,10 +7,7 @@ split = 'newtrain'
 output_path = os.path.join("E:/PyCharm 2024.3.5/projects/data/openwebtext", f'{split}.bin')
 
 # Целевой размер (5% от общего числа токенов)
-target_val_tokens = 200_000_000
-
-import shutil
-shutil.copy2(val_path, val_path + ".backup")
+target_val_tokens = 199_999_488
 
 #данные из val.bin
 val_data = np.memmap(val_path, dtype=np.uint16, mode='r')

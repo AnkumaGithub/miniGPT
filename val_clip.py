@@ -7,8 +7,7 @@ split = 'newval'
 output_path = os.path.join("E:/PyCharm 2024.3.5/projects/data/openwebtext", f'{split}.bin')
 
 # Целевой размер (5% от общего числа токенов)
-target_val_tokens = int(1_000_000_000 * 0.05)  # 50_000_000 токенов
-
+target_val_tokens = 499_712
 #данные из val.bin
 val_data = np.memmap(val_path, dtype=np.uint16, mode='r')
 if len(val_data) <= target_val_tokens:
