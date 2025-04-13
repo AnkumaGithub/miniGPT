@@ -26,18 +26,20 @@ class GPTDataset(Dataset):
         self.data = np.memmap(self.data_path, dtype=np.uint16, mode='r')
         self.block_size = block_size
         self.stride = stride
-        self.total_samples = (len(self.data) - block_size) // stride + 1
+        self.total_samples = (len(self.data) - 1 - block_size) // stride + 1
 
     def __len__(self):
         return self.total_samples
 
     def __getitem__(self, idx):
-        start = idx * self.stride  # Учитываем шаг между примерами
+        start = idx * self.stride
         end = start + self.block_size + 1
+        # Проверка, что end не превышает длину данных
         if end > len(self.data):
-            raise IndexError(f"Index {idx} out of data range (start={start}, end={end})")
-
-        chunk = torch.from_numpy(self.data[start:end].astype(np.int32)).long()
+            # Возвращаем последний доступный блок
+            start = max(0, len(self.data) - self.block_size - 1)
+            end = len(self.data)
+        chunk = torch.from_numpy(self.data[start:end].astype(np.int64)).long()
         return chunk[:-1], chunk[1:]
 
 
@@ -91,7 +93,8 @@ def train():
         drop_path_rate=0.1,
         batch_size = 12,
         lr = 2e-4,
-        bias=False
+        bias=False,
+        mode='test'
     )
 
     # Логирование гиперпараметров
@@ -145,7 +148,14 @@ def train():
                 pin_memory=False,
                 persistent_workers=True
             )
-            print("DataLoader-val-start")
+            print("DataLoader-val-end")
+            test_loader = DataLoader(
+                GPTDataset('test', config.block_size, stride=256),
+                batch_size=config.batch_size,
+                num_workers=num_workers,
+                pin_memory=False,
+                persistent_workers=True
+            )
         except Exception as e:
             logging.error(f"Ошибка загрузки данных: {str(e)}")
             return
@@ -166,16 +176,18 @@ def train():
 
         # Чекпоинтинг
         start_epoch = 0
-        if os.path.exists("latest_checkpoint.pth"):
-            checkpoint = torch.load("latest_checkpoint.pth")
+        checkpoint_name = f"E:\PyCharm 2024.3.5\projects\saves\_latest_checkpoint_{config.mode}.pth"
+        if os.path.exists(checkpoint_name):
+            with torch.serialization.safe_globals([GPTConfig]):
+                checkpoint = torch.load(checkpoint_name)
             model.load_state_dict(checkpoint['model'])
             optimizer.load_state_dict(checkpoint['optimizer'])
             start_epoch = checkpoint['epoch'] + 1
-            logging.info(f"Загружен чекпоинт эпохи {checkpoint['epoch']}")
+            logging.info(f"Загружен чекпоинт эпохи {checkpoint['epoch']} для режима {config.mode}")
 
         global_step = 0
         print("epochs-start")
-        for epoch in range(start_epoch, 5):
+        for epoch in range(start_epoch, 4):
             torch.cuda.reset_peak_memory_stats()
             iter_step = 0
             try:
@@ -194,6 +206,7 @@ def train():
                             logits.view(-1, logits.size(-1)),
                             Y.view(-1),
                         )
+                    experiment.log_metric("batch_loss", loss.item(), step=global_step)
 
                     scaler.scale(loss).backward()
 
@@ -215,10 +228,11 @@ def train():
                     total_loss += loss.item()
                     global_step += 1
 
+
                 # Валидация
                 model.eval()
                 val_loss = 0
-                with torch.inference_mode(), autocast():
+                with torch.inference_mode(), autocast(device_type='cuda', dtype=torch.float16):
                     for X, Y in tqdm(val_loader, desc="Validation"):
                         X, Y = X.cuda(non_blocking=True), Y.cuda(non_blocking=True)
                         logits = model(X)
@@ -258,15 +272,15 @@ def train():
                 checkpoint = {
                     "model": model.state_dict(),
                     "optimizer": optimizer.state_dict(),
-                    "epoch": epoch,
+                    "epoch": epoch + 1,
                     "config": config
                 }
-                torch.save(checkpoint, f"epoch_{epoch:02d}.pth")
-                torch.save(checkpoint, "latest_checkpoint.pth")
-                experiment.log_model(
-                    f"epoch-{epoch:02d}",
-                    f"epoch_{epoch:02d}.pth"
-                )
+                torch.save(checkpoint, f"E:\PyCharm 2024.3.5\projects\saves\_{config.mode}_epoch_{epoch + 1:02d}.pth")
+                torch.save(checkpoint, f"E:\PyCharm 2024.3.5\projects\saves\_latest_checkpoint_{config.mode}.pth")
+                #experiment.log_model( # Лучше не сохранять в облако, много весят
+                    #f"E:\PyCharm 2024.3.5\projects\saves\_{config.mode}_epoch_{epoch + 1:02d}.pth",
+                    #f"E:\PyCharm 2024.3.5\projects\saves\_latest_checkpoint_{config.mode}.pth"
+                #)
             except Exception as e:
                 logging.error(f"Ошибка в эпохе {epoch + 1}: {str(e)}")
                 experiment.log_text(f"Exception: {str(e)}")
