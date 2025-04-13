@@ -16,9 +16,9 @@ def prepare_data():
     OUTPUT_DIR = "E:/PyCharm 2024.3.5/projects/data/openwebtext"  # Выходная директория
     NUM_PROC = 4  # Количество процессов обработки
     NUM_PROC_LOAD = 2  # Процессов для загрузки
-    VAL_RATIO = 0.05  # Доля валидации
+    VAL_RATIO = 0.04  # Доля валидации
     SEED = 42  # Сид для воспроизводимости
-    MAX_TOKENS = 1_000_000_000  # Максимум токенов (1B)
+    MAX_TOKENS = 208_332_800  # Максимум токенов (1B) PS лучше делать так чтобы  после split_train_val, val и train делились на block_size
     MAX_SEQ_LEN = 1024  # Макс длина последовательности
     ENCODING = "gpt2"  # Название токенизатора
     MIN_SEQ_LENGTH = 64

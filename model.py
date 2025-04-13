@@ -18,6 +18,7 @@ class GPTConfig:
     dropout: float = 0.1
     drop_path_rate: float = 0.1
     bias: bool = False  # Можно включить если нужно
+    mode: str = 'test'
 
 
 class RotaryPositionalEmbeddings(nn.Module):
