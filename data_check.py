@@ -24,4 +24,4 @@ def check_blocks(file_path, block_size=512):
 
 
 if __name__ == "__main__":
-    check_blocks("E:/PyCharm 2024.3.5/projects/data/openwebtext/train_stride_256.bin")
+    check_blocks("E:/PyCharm 2024.3.5/projects/data/openwebtext/trainbackup.bin")

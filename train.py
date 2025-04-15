@@ -1,5 +1,3 @@
-import math
-
 from comet_ml import Experiment
 import comet_ml
 import torch
@@ -11,8 +9,8 @@ from model import GPT, GPTConfig
 import logging
 import os
 import psutil
-import torch.nn.functional as F
 from dotenv import load_dotenv
+import math
 
 os.environ["TMPDIR"] = "E:/temp_pytorch"
 os.environ["TEMP"] = "E:/temp_pytorch"
@@ -45,7 +43,7 @@ class GPTDataset(Dataset):
             # Возвращаем последний доступный блок
             start = max(0, len(self.data) - self.block_size - 1)
             end = len(self.data)
-        chunk = torch.from_numpy(self.data[start:end].astype(np.int64))
+        chunk = torch.from_numpy(self.data[start:end].astype(np.int64)).long()
         return chunk[:-1], chunk[1:]
 
 
@@ -83,23 +81,6 @@ def log_gradients(model, experiment, step):
                 logging.info(f"[DEBUG] {name} | max_grad={grad_max:.4f}")
     experiment.log_metrics(grad_data, step=step)
 
-def estimate_loss(model, val_loader, ctx):
-    """Возвращает loss и perplexity"""
-    model.eval()
-    losses = []
-    for X, Y in val_loader:
-        X, Y = X.cuda(non_blocking=True), Y.cuda(non_blocking=True)
-        with ctx:
-            logits = model(X)
-            loss = torch.nn.functional.cross_entropy(
-                logits.view(-1, logits.size(-1)),
-                Y.view(-1))
-        losses.append(loss.item())
-    model.train()
-    avg_loss = torch.tensor(losses).mean().item()
-    perplexity = math.exp(avg_loss)
-    return avg_loss, perplexity
-
 def get_lr(it, learning_rate, warmup_iters, min_lr, lr_decay_iters):
     # 1) Линейный прогрев
     if it < warmup_iters:
@@ -117,17 +98,18 @@ def train():
     # Конфигурация для RTX 3060
     config = GPTConfig(
         vocab_size=50257,
-        block_size = 511,
-        n_layer=6,
+        block_size = 255,
+        n_layer=8,
         n_head=8,
-        n_embd=368,
-        dropout=0.1,
-        drop_path_rate=0.1,
-        batch_size = 16,
+        n_embd=512,
+        dropout=0.05,
+        drop_path_rate=0.05,
+        batch_size = 32,
         lr = 3e-4,
         bias=False,
-        mode='train_512_2',
-        stride = 512
+        mode='train_256_f',
+        stride = 64,
+        weight_decay = 0.01
     )
 
     # Инициализация Comet ML
@@ -152,17 +134,17 @@ def train():
         "drop_path_rate": config.drop_path_rate,
         "lr": config.lr,
         "batch_size": config.batch_size,
-        "weight_decay": 0.02,
+        "weight_decay": config.weight_decay,
         "stride": config.stride,
     })
 
     try:
+        # Инициализация модели с оптимизациями
+        model = GPT(config).cuda()
+
         # Проверка наличия CUDA
         if not torch.cuda.is_available():
             raise RuntimeError("CUDA is not available")
-
-        model = GPT(config).cuda()
-        ctx = torch.amp.autocast(device_type='cuda', dtype=torch.float16)
 
         # PyTorch 2.0+
         #if torch.__version__ >= "2.0.0":
@@ -174,13 +156,12 @@ def train():
         torch.backends.cuda.matmul.allow_tf32 = True  # Для тензорных ядер
         torch.backends.cudnn.allow_tf32 = True
 
-
         # DataLoader с проверкой данных
         try:
             num_workers = min(4, os.cpu_count() // 4)
             print("DataLoader-train-start")
             train_loader = DataLoader(
-                GPTDataset('train_stride_128', config.block_size, stride=config.stride),
+                GPTDataset('train_stride_256_4h_200m_1', config.block_size, stride=config.stride),
                 batch_size=config.batch_size,
                 shuffle=True,
                 num_workers=num_workers,
@@ -190,7 +171,7 @@ def train():
             print("DataLoader-train-end")
             print("DataLoader-val-start")
             val_loader = DataLoader(
-                GPTDataset('train_stride_32', config.block_size, stride=config.stride),
+                GPTDataset('val_stride_128_4h_5m', config.block_size, stride=config.stride),
                 batch_size=config.batch_size,
                 num_workers=num_workers,
                 pin_memory=False,
@@ -208,25 +189,26 @@ def train():
             logging.error(f"Ошибка загрузки данных: {str(e)}")
             return
 
-        warmup_iters = 500  # Совпадает с вашим текущим прогревом
-        min_lr = 3e-5  # Из вашего шедулера
-        lr_decay_iters = 5 * len(train_loader)  # Общее число итераций
-        gradient_accumulation_steps = 4  # Пункт 1: Градиентная аккумуляция
+        # Оптимизатор и скейлер
+        warmup_iters = 500
+        min_lr = 3e-5
+        lr_decay_iters = 3 * len(train_loader)  # Общее число итераций
 
         # Оптимизатор и скейлер
         scaler = torch.amp.GradScaler(device='cuda')
         fused_available = hasattr(torch.optim, 'fused_adam')
-        best_val_loss = float('inf')
         optimizer = model.configure_optimizers(
-            weight_decay=0.05,
+            weight_decay=config.weight_decay,
             learning_rate=config.lr,
             betas=(0.9, 0.95),
             device_type='cuda'
         )
 
-        warmup_steps = 500  # Абсолютное число шагов прогрева
-        total_train_steps = 14 * len(train_loader)  # 3 текущие + 11 будущих эпох
-        planned_total_epochs = 14
+        # Чекпоинтинг
+        start_epoch = 1
+        global_step = 0
+        total_train_steps = 3 * len(train_loader)  # 3 текущие + 11 будущих эпох
+        planned_total_epochs = 3
         if os.path.exists(checkpoint_name):
             with torch.serialization.safe_globals([GPTConfig]):
                 checkpoint = torch.load(checkpoint_name)
@@ -238,88 +220,93 @@ def train():
             global_step = checkpoint['global_step']
             logging.info(f"Загружен чекпоинт эпохи {checkpoint['epoch']} для режима {config.mode}")
 
-
-        # Чекпоинтинг
-        start_epoch = 1
-
-        global_step = 0
-
         print("epochs-start")
         experiment.log_other("train_samples", len(train_loader))
         experiment.log_other("val_samples", len(val_loader))
         experiment.log_other("stride", config.stride)
-        current_epochs = 2
+        current_epochs = 3
         perplexity = None
         for epoch in range(start_epoch, start_epoch + current_epochs):
             torch.cuda.reset_peak_memory_stats()
             iter_step = 0
             try:
                 model.train()
-                optimizer.zero_grad()
+                total_loss = 0
 
                 train_iter = tqdm(train_loader, desc=f"Epoch {epoch}")
-                for micro_step, (X, Y) in enumerate(train_iter):
-                    # Пункт 1: Градиентная аккумуляция
-                    X, Y = X.to(device='cuda', non_blocking=True), Y.to(device='cuda', non_blocking=True)
+                for X, Y in train_iter:
+                    X, Y = X.to('cuda', non_blocking=True, dtype=torch.long), Y.to('cuda', non_blocking=True, dtype=torch.long)
+
+                    optimizer.zero_grad(set_to_none=True)
 
                     with autocast(device_type='cuda', dtype=torch.float16):
                         logits = model(X)
-                        loss = F.cross_entropy(
+                        loss = torch.nn.functional.cross_entropy(
                             logits.view(-1, logits.size(-1)),
-                            Y.view(-1))
-                        loss = loss / gradient_accumulation_steps  # Масштабируем loss
-                        train_perplexity = math.exp(loss.item())
-                        if math.isnan(train_perplexity) or math.isinf(train_perplexity):
-                            logging.error("Invalid perplexity value! Stopping training.")
-                            break
+                            Y.view(-1),
+                        )
+                    experiment.log_metric("batch_loss", loss.item(), step=global_step)
 
                     scaler.scale(loss).backward()
+                    iter_step += 1
 
-                    if (micro_step + 1) % gradient_accumulation_steps == 0:
-                        # Пункт 3: Обновление LR
-                        lr = get_lr(global_step, config.lr, warmup_iters, min_lr, lr_decay_iters)
-                        for param_group in optimizer.param_groups:
-                            param_group['lr'] = lr
+                    lr = get_lr(global_step, config.lr, warmup_iters, min_lr, lr_decay_iters)
+                    for param_group in optimizer.param_groups:
+                        param_group['lr'] = lr
 
-                        scaler.unscale_(optimizer)
-                        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-                        scaler.step(optimizer)
-                        scaler.update()
-                        optimizer.zero_grad()
-                        global_step += 1
+                    scaler.unscale_(optimizer)
 
-                        if global_step % 50 == 0:
-                            logging.info(
-                                f"Step {global_step} | "
-                                f"Train Loss: {loss.item():.3f} | "
-                                f"Train Perplexity: {train_perplexity:.2f}"
-                            )
+                    if iter_step % 50 == 0:
+                        log_gradients(model, experiment, global_step)
+                        log_memory_usage(experiment, global_step)
 
-                        # Логирование и валидация
-                        if global_step % 100 == 0:
-                            val_loss, val_perplexity = estimate_loss(model, val_loader, ctx)
-                            if val_loss < best_val_loss:
-                                best_val_loss = val_loss
-                                checkpoint = {
-                                    "model": model.state_dict(),
-                                    "optimizer": optimizer.state_dict(),
-                                    "epoch": epoch,
-                                    "global_step": global_step,
-                                    "config": config
-                                }
-                                torch.save(checkpoint, f"E:\PyCharm 2024.3.5\projects\saves\_best_val_checkpoint_{config.mode}.pth")
-                            log_gradients(model, experiment, global_step)
-                            log_memory_usage(experiment, global_step)
-                            logging.info(
-                                f"Step {global_step} | "
-                                f"Val Loss: {val_loss:.3f} | "
-                                f"Val Perplexity: {val_perplexity:.2f}"
-                            )
+                    # Gradient Clipping
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=2.0)
 
-                            experiment.log_metrics({
-                                "val_loss": val_loss,
-                                "val_perplexity": val_perplexity,
-                            }, step=global_step)
+                    scaler.step(optimizer)
+                    scaler.update()
+
+                    total_loss += loss.item()
+                    global_step += 1
+
+
+                # Валидация
+                model.eval()
+                val_loss = 0
+                total_tokens = 0
+                with torch.inference_mode(), autocast(device_type='cuda', dtype=torch.float16):
+                    for X, Y in tqdm(val_loader, desc="Validation"):
+                        X, Y = X.cuda(non_blocking=True), Y.cuda(non_blocking=True)
+                        logits = model(X)
+                        loss = torch.nn.functional.cross_entropy(
+                            logits.view(-1, logits.size(-1)),
+                            Y.view(-1),
+                            reduction='sum',
+                        )
+                        val_loss += loss.item()
+                        total_tokens += Y.numel()
+                val_loss /= total_tokens
+                perplexity = torch.exp(torch.tensor(val_loss)).item()
+                avg_train_loss = total_loss / len(train_loader)
+                current_lr = lr
+                logging.info(
+                    f"Epoch {epoch} | "
+                    f"Train Loss: {avg_train_loss:.3f} | "
+                    f"Val Loss: {val_loss:.3f} | "
+                    f"Val Perplexity: {perplexity:.2f} | "
+                    f"LR: {current_lr:.2e}"
+                )
+
+                experiment.log_metrics({
+                    "train_loss": avg_train_loss,
+                    "val_loss": val_loss,
+                    "learning_rate": current_lr,
+                    "val_perplexity": perplexity,
+                    "epoch": epoch,
+                    "gpu_memory_peak": torch.cuda.max_memory_allocated() / 1e9,
+                    "gpu_memory_allocated": torch.cuda.memory_allocated() / 1e9,
+                    "gpu_memory_reserved": torch.cuda.memory_reserved() / 1e9
+                }, step=global_step)
 
                 for name, param in model.named_parameters():
                     experiment.log_histogram_3d(
@@ -340,8 +327,7 @@ def train():
                     "epoch": epoch,
                     "config": config,
                     "global_step": global_step,
-                    "experiment_id": experiment.get_key(),
-                    "planned_total_epochs" : 14
+                    "experiment_id": experiment.get_key()
                 }
                 torch.save(checkpoint, f"E:\PyCharm 2024.3.5\projects\saves\_{config.mode}_epoch_{epoch:02d}.pth")
                 torch.save(checkpoint, f"E:\PyCharm 2024.3.5\projects\saves\_latest_checkpoint_{config.mode}.pth")

@@ -38,8 +38,8 @@ def check_bin_file(file_path, vocab_size=50257):
 if __name__ == "__main__":
     # Список файлов для проверки
     bin_files = [
-        "E:/PyCharm 2024.3.5/projects/data/openwebtext/train_stride_512.bin",
-        "E:/PyCharm 2024.3.5/projects/data/openwebtext/val_stride_512.bin"
+        "E:/PyCharm 2024.3.5/projects/data/openwebtext/train_stride_512_5h_500m.bin",
+        "E:/PyCharm 2024.3.5/projects/data/openwebtext/val_stride_512_5h_20m.bin"
     ]
 
     # Проверка каждого файла
