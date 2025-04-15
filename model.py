@@ -11,17 +11,18 @@ from dataclasses import dataclass
 @dataclass
 class GPTConfig:
     vocab_size: int = 50257
-    n_layer: int = 6
+    n_layer: int = 8
     n_head: int = 8
-    n_embd: int = 368
-    block_size: int = 511
-    batch_size: int = 16
+    n_embd: int = 512
+    block_size: int = 255
+    batch_size: int = 32
     lr: float = 3e-4
-    dropout: float = 0.1
-    drop_path_rate: float = 0.1
+    dropout: float = 0.05
+    drop_path_rate: float = 0.05
     bias: bool = False  # Можно включить если нужно
-    mode: str = 'train_512_2'
-    stride: int = 512
+    mode: str = 'train_256_f'
+    stride: int = 64
+    weight_decay: float = 0.01
 
 
 class RotaryPositionalEmbeddings(nn.Module):
