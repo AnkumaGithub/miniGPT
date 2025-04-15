@@ -2,12 +2,12 @@ import numpy as np
 import os
 
 
-def check_blocks(file_path, block_size=1024):
+def check_blocks(file_path, block_size=512):
     data = np.memmap(file_path, dtype=np.uint16, mode='r')
     total_tokens = len(data)
     num_blocks = total_tokens // block_size
     print(f"Всего токенов: {total_tokens}")
-    print(f"Ожидаемое число блоков по 1024: {num_blocks}")
+    print(f"Ожидаемое число блоков по 512: {num_blocks}")
 
     # Проверка, что все блоки имеют длину 1024
     for i in range(num_blocks):
@@ -24,4 +24,4 @@ def check_blocks(file_path, block_size=1024):
 
 
 if __name__ == "__main__":
-    check_blocks("E:/PyCharm 2024.3.5/projects/data/openwebtext/test.bin")
+    check_blocks("E:/PyCharm 2024.3.5/projects/data/openwebtext/train_stride_256.bin")

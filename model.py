@@ -1,3 +1,5 @@
+import inspect
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -11,14 +13,15 @@ class GPTConfig:
     vocab_size: int = 50257
     n_layer: int = 6
     n_head: int = 8
-    n_embd: int = 256
-    block_size: int = 1024
-    batch_size: int = 12
-    lr: float = 2e-4
+    n_embd: int = 368
+    block_size: int = 511
+    batch_size: int = 16
+    lr: float = 3e-4
     dropout: float = 0.1
     drop_path_rate: float = 0.1
     bias: bool = False  # Можно включить если нужно
-    mode: str = 'test'
+    mode: str = 'train_512_2'
+    stride: int = 512
 
 
 class RotaryPositionalEmbeddings(nn.Module):
@@ -31,7 +34,7 @@ class RotaryPositionalEmbeddings(nn.Module):
         self.register_buffer("inv_freq", inv_freq, persistent=False)
 
     def rotate_half(self, x):
-        x1, x2 = x.chunk(2, dim=-1)
+        x1, x2 = x.chunk(2, dim=-1) # Если head_dim нечётный то поломается, можно x1 = x[..., : x.shape[-1] // 2] x2 = x[..., x.shape[-1] // 2 :]
         return torch.cat((-x2, x1), dim=-1)
 
     def forward(self, x, offset=0):
@@ -54,7 +57,10 @@ class CausalSelfAttention(nn.Module):
         self.head_dim = config.n_embd // config.n_head
 
         self.rope = RotaryPositionalEmbeddings(self.head_dim)
-        self.c_attn = nn.Linear(config.n_embd, 3 * config.n_embd, bias=config.bias) # преобразовываем в q k v
+        # преобразовываем в q k v
+        self.q_attn = nn.Linear(config.n_embd, config.n_embd, bias=config.bias)
+        self.v_attn = nn.Linear(config.n_embd, config.n_embd, bias=config.bias)
+        self.k_attn = nn.Linear(config.n_embd, config.n_embd, bias=config.bias)
         self.c_proj = nn.Linear(config.n_embd, config.n_embd, bias=config.bias)
         self.attn_dropout = nn.Dropout(config.dropout)
         self.resid_dropout = nn.Dropout(config.dropout)
@@ -64,10 +70,13 @@ class CausalSelfAttention(nn.Module):
             self.register_buffer("bias", torch.tril(torch.ones(config.block_size, config.block_size)),
                                  persistent=False)
 
+
+
     def forward(self, x, past_key_values=None, use_cache=False):
         B, T, C = x.size() # Batch, seq_len, emb_dim
-        qkv = self.c_attn(x) # проецируем x в qkv с linear
-        q, k, v = qkv.split(self.n_embd, dim=2)
+        q = self.q_attn(x)
+        k = self.k_attn(x)
+        v = self.v_attn(x)
 
         q = q.view(B, T, self.n_head, self.head_dim).transpose(1, 2) # Разделяем для голов
         k = k.view(B, T, self.n_head, self.head_dim).transpose(1, 2)
@@ -95,8 +104,8 @@ class CausalSelfAttention(nn.Module):
         else:
             # Ручная реализация внимания с маской
             att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
-            mask = torch.tril(
-                torch.ones(T, T + (past_key_values[0].size(2) if past_key_values else 0), device=x.device))
+            total_len = T + (past_key_values[0].size(2) if past_key_values else 0)
+            mask = torch.tril(torch.ones(T, total_len, device=x.device))
             mask = mask[:, -k.size(2):]  # Обрезаем до актуальной длины ключей
             mask = mask.unsqueeze(0).unsqueeze(0)
             att = att.masked_fill(mask == 0, float('-inf'))
@@ -108,22 +117,16 @@ class CausalSelfAttention(nn.Module):
         y = self.resid_dropout(self.c_proj(y))
         return y, new_key_values
 
-class SwiGLU(nn.Module):
-    def forward(self, x):
-        x, gate = x.chunk(2, dim=-1)
-        return x * F.silu(gate)
-
 class MLP(nn.Module):
     def __init__(self, config):
         super().__init__()
-        hidden_dim = 4 * config.n_embd
-        self.c_fc = nn.Linear(config.n_embd, hidden_dim, bias=config.bias)
-        self.swiglu = SwiGLU()
-        self.c_proj = nn.Linear(hidden_dim // 2, config.n_embd, bias=config.bias)
+        self.c_fc = nn.Linear(config.n_embd, config.n_embd * 4, bias=config.bias)
+        self.activ = nn.GELU()
+        self.c_proj = nn.Linear(config.n_embd * 4, config.n_embd, bias=config.bias)
         self.dropout = nn.Dropout(config.dropout)
 
     def _forward_impl(self, x):
-        return self.dropout(self.c_proj(self.swiglu(self.c_fc(x))))
+        return self.dropout(self.c_proj(self.activ(self.c_fc(x))))
 
     def forward(self, x):
         return checkpoint(self._forward_impl, x, use_reentrant=False)
@@ -189,9 +192,16 @@ class GPT(nn.Module):
             ln_f=nn.LayerNorm(config.n_embd, bias=config.bias),
         ))
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
-        self.lm_head.weight = nn.Parameter(self.transformer.wte.weight.clone())
+        self.transformer.wte.weight = self.lm_head.weight
 
         self.apply(self._init_weights)
+
+        for pn, p in self.named_parameters():
+            if pn.endswith('c_proj.weight'):
+                torch.nn.init.normal_(p, mean=0.0, std=0.02 / math.sqrt(2 * config.n_layer))
+
+        # Дополнительная инициализация для стабильности
+        #self._additional_init()
 
     def _init_weights(self, module):
         if isinstance(module, nn.Linear):
@@ -205,9 +215,18 @@ class GPT(nn.Module):
                 nn.init.zeros_(module.bias)
             nn.init.ones_(module.weight)
 
+    def _additional_init(self): # У модели были огромные градиенты
+
+        for block in self.transformer.h:
+            nn.init.xavier_normal_(block.mlp.c_proj.weight, gain=1.0)
+
+        # Инициализация позиционных эмбеддингов
+        #nn.init.normal_(self.transformer.wpe.weight, std=0.02)
+
     def forward(self, idx, past_key_values=None, use_cache=False):
         B, T = idx.size()
         pos = torch.arange(0, T, device=idx.device).unsqueeze(0)
+        pos = torch.clamp(pos, 0, self.config.block_size - 1)
 
         tok_emb = self.transformer.wte(idx)
         pos_emb = self.transformer.wpe(pos)
@@ -222,24 +241,35 @@ class GPT(nn.Module):
             else:
                 x = block(x, past_kv, use_cache)
 
-        x = self.transformer.ln_f(x)
+        #x = F.layer_norm(x, (self.config.n_embd,))  #Дополнительная нормализация
         logits = self.lm_head(x)
         return (logits, new_key_values) if use_cache else logits
 
-    def configure_optimizers(self, weight_decay=0.1, learning_rate=3e-4):
-        no_decay = {"bias"}
-        # Добавляем веса всех LayerNorm
-        for name, _ in self.named_parameters():
-            if ("ln" in name.split('.')[-2]) and name.endswith(".weight"):
-                no_decay.add(name)
-
-        params = [
-            {"params": [p for n, p in self.named_parameters() if p.requires_grad and n in no_decay],
-             "weight_decay": 0.0},
-            {"params": [p for n, p in self.named_parameters() if p.requires_grad and n not in no_decay],
-             "weight_decay": weight_decay},
+    def configure_optimizers(self, weight_decay, learning_rate, betas, device_type):
+        # start with all of the candidate parameters
+        param_dict = {pn: p for pn, p in self.named_parameters()}
+        # filter out those that do not require grad
+        param_dict = {pn: p for pn, p in param_dict.items() if p.requires_grad}
+        # create optim groups. Any parameters that is 2D will be weight decayed, otherwise no.
+        # i.e. all weight tensors in matmuls + embeddings decay, all biases and layernorms don't.
+        decay_params = [p for n, p in param_dict.items() if p.dim() >= 2]
+        nodecay_params = [p for n, p in param_dict.items() if p.dim() < 2]
+        optim_groups = [
+            {'params': decay_params, 'weight_decay': weight_decay},
+            {'params': nodecay_params, 'weight_decay': 0.0}
         ]
-        return torch.optim.AdamW(params, lr=learning_rate)
+        num_decay_params = sum(p.numel() for p in decay_params)
+        num_nodecay_params = sum(p.numel() for p in nodecay_params)
+        print(f"num decayed parameter tensors: {len(decay_params)}, with {num_decay_params:,} parameters")
+        print(f"num non-decayed parameter tensors: {len(nodecay_params)}, with {num_nodecay_params:,} parameters")
+        # Create AdamW optimizer and use the fused version if it is available
+        fused_available = 'fused' in inspect.signature(torch.optim.AdamW).parameters
+        use_fused = fused_available and device_type == 'cuda'
+        extra_args = dict(fused=True) if use_fused else dict()
+        optimizer = torch.optim.AdamW(optim_groups, lr=learning_rate, betas=betas, **extra_args)
+        print(f"using fused AdamW: {use_fused}")
+
+        return optimizer
 
     @torch.inference_mode()
     def generate(self, idx, max_new_tokens=100, temperature=1.0, top_k=None, stop_token=None, echo=None) -> torch.Tensor:
