@@ -3,10 +3,10 @@ import os
 target_train_tokens = 199_999_488
 
 # Путь к файлу val.bin
-val_path = "E:/PyCharm 2024.3.5/projects/data/openwebtext/valbackup.bin"
+val_path = "/data/openwebtext/valbackup.bin"
 
 split = 'val_stride_64'
-output_path = os.path.join("E:/PyCharm 2024.3.5/projects/data/openwebtext", f'{split}.bin')
+output_path = os.path.join("/data/openwebtext", f'{split}.bin')
 
 target_train_tokens_128 = 1_260_000 # для stride=128
 

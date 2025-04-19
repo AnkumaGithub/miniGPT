@@ -37,7 +37,7 @@ def decode_train_bin(
         num_samples: int = 5,  # Сколько примеров показать
         max_seq_len: int = 1024
 ):
-    # Инициализация токенизатора как в data.py
+    # Инициализация токенизатора как в data_webtext.py
     enc = tiktoken.get_encoding("gpt2")
 
     # Загрузка бинарного файла
@@ -61,15 +61,8 @@ def decode_train_bin(
 
         # Выводим результат
         print(f"--- Пример {i + 1} (токены {start}-{end}) ---")
-        print(text.replace('\n', ' ') + "...")
+        print(text.replace('\n', ' '))
 
 
 if __name__ == "__main__":
-    #decode_train_bin()
-    enc = tiktoken.get_encoding("gpt2")
-    dataset = GPTDataset(split='trainbackup', block_size=511, stride=512)
-    for i in range(3):
-        x, y = dataset[i]
-        print(f"Блок {i}:")
-        print("Вход:", enc.decode(x.numpy()[-50:]))  # Последние 50 токенов входа
-        print("Цель:", enc.decode(y.numpy()[:50]))  # Первые 50 токенов цели
+    decode_train_bin()

@@ -3,10 +3,10 @@ import os
 target_train_tokens = 199_999_488
 
 # Путь к файлу val.bin
-val_path = "E:/PyCharm 2024.3.5/projects/data/openwebtext/trainbackup.bin"
+val_path = "/data/openwebtext/trainbackup.bin"
 
 split = 'val_stride_128'
-output_path = os.path.join("E:/PyCharm 2024.3.5/projects/data/openwebtext", f'{split}.bin')
+output_path = os.path.join("/data/openwebtext", f'{split}.bin')
 
 target_train_tokens_128 = 2_560_000 # для stride=128
 
@@ -26,7 +26,7 @@ else:
     print(f"train.bin обрезан до {target_train_tokens_128} токенов.")
 
 split = 'val_stride_32'
-output_path = os.path.join("E:/PyCharm 2024.3.5/projects/data/openwebtext", f'{split}.bin')
+output_path = os.path.join("/data/openwebtext", f'{split}.bin')
 
 target_val_tokens_32 = 614_400 # для stride=32
 

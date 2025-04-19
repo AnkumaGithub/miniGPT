@@ -23,7 +23,7 @@ logging.basicConfig(level=logging.INFO,
 
 class GPTDataset(Dataset):
     def __init__(self, split, block_size, stride=256):
-        self.data_path = f'E:/PyCharm 2024.3.5/projects/data/openwebtext/{split}.bin'
+        self.data_path = f'E:/PyCharm 2024.3.5/projects/data/tinystories/{split}.bin'
         if not os.path.exists(self.data_path):
             raise FileNotFoundError(f"Data file {self.data_path} not found")
 
@@ -104,11 +104,11 @@ def train():
         n_embd=512,
         dropout=0.05,
         drop_path_rate=0.05,
-        batch_size = 32,
+        batch_size = 40,
         lr = 3e-4,
         bias=False,
-        mode='train_256_f',
-        stride = 64,
+        mode='train_256_t',
+        stride = 256,
         weight_decay = 0.01
     )
 
@@ -161,7 +161,7 @@ def train():
             num_workers = min(4, os.cpu_count() // 4)
             print("DataLoader-train-start")
             train_loader = DataLoader(
-                GPTDataset('train_stride_256_4h_200m_1', config.block_size, stride=config.stride),
+                GPTDataset('train_256', config.block_size, stride=config.stride),
                 batch_size=config.batch_size,
                 shuffle=True,
                 num_workers=num_workers,
@@ -171,20 +171,13 @@ def train():
             print("DataLoader-train-end")
             print("DataLoader-val-start")
             val_loader = DataLoader(
-                GPTDataset('val_stride_128_4h_5m', config.block_size, stride=config.stride),
+                GPTDataset('val_256', config.block_size, stride=config.stride),
                 batch_size=config.batch_size,
                 num_workers=num_workers,
                 pin_memory=False,
                 persistent_workers=True
             )
             print("DataLoader-val-end")
-            test_loader = DataLoader(
-                GPTDataset('test', config.block_size, stride=config.stride),
-                batch_size=config.batch_size,
-                num_workers=num_workers,
-                pin_memory=False,
-                persistent_workers=True
-            )
         except Exception as e:
             logging.error(f"Ошибка загрузки данных: {str(e)}")
             return
@@ -192,7 +185,7 @@ def train():
         # Оптимизатор и скейлер
         warmup_iters = 500
         min_lr = 3e-5
-        lr_decay_iters = 3 * len(train_loader)  # Общее число итераций
+        lr_decay_iters = 1 * len(train_loader)  # Общее число итераций
 
         # Оптимизатор и скейлер
         scaler = torch.amp.GradScaler(device='cuda')
@@ -208,7 +201,7 @@ def train():
         start_epoch = 1
         global_step = 0
         total_train_steps = 3 * len(train_loader)  # 3 текущие + 11 будущих эпох
-        planned_total_epochs = 3
+        planned_total_epochs = 1
         if os.path.exists(checkpoint_name):
             with torch.serialization.safe_globals([GPTConfig]):
                 checkpoint = torch.load(checkpoint_name)
@@ -224,7 +217,7 @@ def train():
         experiment.log_other("train_samples", len(train_loader))
         experiment.log_other("val_samples", len(val_loader))
         experiment.log_other("stride", config.stride)
-        current_epochs = 3
+        current_epochs = 1
         perplexity = None
         for epoch in range(start_epoch, start_epoch + current_epochs):
             torch.cuda.reset_peak_memory_stats()
@@ -245,14 +238,16 @@ def train():
                             logits.view(-1, logits.size(-1)),
                             Y.view(-1),
                         )
-                    experiment.log_metric("batch_loss", loss.item(), step=global_step)
-
-                    scaler.scale(loss).backward()
-                    iter_step += 1
 
                     lr = get_lr(global_step, config.lr, warmup_iters, min_lr, lr_decay_iters)
                     for param_group in optimizer.param_groups:
                         param_group['lr'] = lr
+
+                    train_iter.set_postfix(batch_loss=f"{loss.item():.4f}", lr=f"{lr:.8f}")
+                    experiment.log_metric("batch_loss", loss.item(), step=global_step)
+
+                    scaler.scale(loss).backward()
+                    iter_step += 1
 
                     scaler.unscale_(optimizer)
 

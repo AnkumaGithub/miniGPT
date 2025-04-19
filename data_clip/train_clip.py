@@ -2,11 +2,11 @@ import numpy as np
 import os
 
 # Путь к файлу val.bin
-val_path = "E:/PyCharm 2024.3.5/projects/data/openwebtext/train_stride_512_5h_500m.bin"
+val_path = "/data/openwebtext/train_stride_512_5h_500m.bin"
 split1 = 'train_stride_256_4h_200m_1'
 split2 = 'train_stride_256_4h_200m_2'
 split3 = 'train_stride_256_4h_200m_3'
-output_path = os.path.join("E:/PyCharm 2024.3.5/projects/data/openwebtext", f'{split3}.bin')
+output_path = os.path.join("/data/openwebtext", f'{split3}.bin')
 
 target_train_tokens_512 = 599_998_464
 target_train_tokens = 199_999_488

@@ -4,17 +4,17 @@ from model import GPT, GPTConfig
 
 config = GPTConfig(
     vocab_size=50257,
-    block_size=511,
-    n_layer=6,
+    block_size=255,
+    n_layer=8,
     n_head=8,
-    n_embd=368,
+    n_embd=512,
     dropout=0.05,
     drop_path_rate=0.05,
-    batch_size=16,
+    batch_size=40,
     lr=3e-4,
     bias=False,
-    mode='train_512_f',
-    stride=512,
+    mode='train_256_t',
+    stride=256,
     weight_decay=0.01
 )
 
@@ -34,7 +34,7 @@ model.eval()
 
 enc = tiktoken.get_encoding(ENCODING)
 
-def generate_text(prompt, max_new_tokens=100, temperature=5, top_k=50):
+def generate_text(prompt, max_new_tokens=100, temperature=1, top_k=30):
     input_ids = torch.tensor([enc.encode(prompt)], dtype=torch.long).to(DEVICE)
 
     with torch.no_grad():

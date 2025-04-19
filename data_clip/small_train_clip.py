@@ -3,11 +3,11 @@ import os
 target_train_tokens = 200_000_000
 
 # Путь к файлу val.bin
-val_path = "E:/PyCharm 2024.3.5/projects/data/openwebtext/trainbackup.bin"
+val_path = "/data/openwebtext/trainbackup.bin"
 
 
 split = 'train_stride_512_5h_500m'
-output_path = os.path.join("E:/PyCharm 2024.3.5/projects/data/openwebtext", f'{split}.bin')
+output_path = os.path.join("/data/openwebtext", f'{split}.bin')
 
 target_train_tokens_512 = 599_998_464 # для stride=512 (чтобы делилось по 512 по 16)
 
@@ -27,7 +27,7 @@ else:
     print(f"train.bin обрезан до {target_train_tokens_512} токенов.")
 
 split = 'train_stride_256_4h_200m'
-output_path = os.path.join("E:/PyCharm 2024.3.5/projects/data/openwebtext", f'{split}.bin')
+output_path = os.path.join("/data/openwebtext", f'{split}.bin')
 
 target_train_tokens_256 = 199_999_488 # для stride=128 (чтобы делилось по 512 по 16)
 
@@ -47,7 +47,7 @@ else:
     print(f"train.bin обрезан до {target_train_tokens_256} токенов.")
 
 split = 'train_stride_128_4h_100m'
-output_path = os.path.join("E:/PyCharm 2024.3.5/projects/data/openwebtext", f'{split}.bin')
+output_path = os.path.join("/data/openwebtext", f'{split}.bin')
 target_train_tokens_128 = 99_999_744 # для stride=128 (чтобы делилось по 512 по 16)
 
 #данные из val.bin
@@ -66,7 +66,7 @@ else:
     print(f"train.bin обрезан до {target_train_tokens_128} токенов.")
 
 split = 'train_stride_64_4h_50m'
-output_path = os.path.join("E:/PyCharm 2024.3.5/projects/data/openwebtext", f'{split}.bin')
+output_path = os.path.join("/data/openwebtext", f'{split}.bin')
 target_train_tokens_64 = 49_995_776 # для stride=64 (чтобы делилось по 512 по 16)
 
 #данные из val.bin
@@ -89,7 +89,7 @@ last_tok = target_train_tokens_512 + target_train_tokens_256 + target_train_toke
 # Добавим валидацию----------------------------------------------------------------
 
 split = 'val_stride_512_5h_20m'
-output_path = os.path.join("E:/PyCharm 2024.3.5/projects/data/openwebtext", f'{split}.bin')
+output_path = os.path.join("/data/openwebtext", f'{split}.bin')
 
 target_val_tokens_512 = 29_999_104 # для stride=512 (чтобы делилось по 512 по 16)
 
@@ -109,7 +109,7 @@ else:
     print(f"train.bin обрезан до {target_val_tokens_512} токенов.")
 
 split = 'val_stride_256_4h_10m'
-output_path = os.path.join("E:/PyCharm 2024.3.5/projects/data/openwebtext", f'{split}.bin')
+output_path = os.path.join("/data/openwebtext", f'{split}.bin')
 
 target_val_tokens_256 = 9_830_400 # для stride=128 (чтобы делилось по 512 по 16)
 
@@ -129,7 +129,7 @@ else:
     print(f"train.bin обрезан до {target_val_tokens_256} токенов.")
 
 split = 'val_stride_128_4h_5m'
-output_path = os.path.join("E:/PyCharm 2024.3.5/projects/data/openwebtext", f'{split}.bin')
+output_path = os.path.join("/data/openwebtext", f'{split}.bin')
 target_val_tokens_128 = 4_915_200 # для stride=128 (чтобы делилось по 512 по 16)
 
 #данные из val.bin
@@ -148,7 +148,7 @@ else:
     print(f"train.bin обрезан до {target_val_tokens_128} токенов.")
 
 split = 'val_stride_64_4h_3m'
-output_path = os.path.join("E:/PyCharm 2024.3.5/projects/data/openwebtext", f'{split}.bin')
+output_path = os.path.join("/data/openwebtext", f'{split}.bin')
 target_val_tokens_64 = 2_457_600 # для stride=64 (чтобы делилось по 512 по 16)
 
 #данные из val.bin

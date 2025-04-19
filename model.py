@@ -15,13 +15,13 @@ class GPTConfig:
     n_head: int = 8
     n_embd: int = 512
     block_size: int = 255
-    batch_size: int = 32
+    batch_size: int = 40
     lr: float = 3e-4
     dropout: float = 0.05
     drop_path_rate: float = 0.05
     bias: bool = False  # Можно включить если нужно
-    mode: str = 'train_256_f'
-    stride: int = 64
+    mode: str = 'train_256_t'
+    stride: int = 256
     weight_decay: float = 0.01
 
 
@@ -206,7 +206,7 @@ class GPT(nn.Module):
 
     def _init_weights(self, module):
         if isinstance(module, nn.Linear):
-            nn.init.xavier_normal_(module.weight, gain=1.0)
+            nn.init.xavier_normal_(module.weight, gain=0.02)
             if module.bias is not None:
                 nn.init.zeros_(module.bias)
         elif isinstance(module, nn.Embedding):
@@ -219,7 +219,7 @@ class GPT(nn.Module):
     def _additional_init(self): # У модели были огромные градиенты
 
         for block in self.transformer.h:
-            nn.init.xavier_normal_(block.mlp.c_proj.weight, gain=1.0)
+            nn.init.xavier_normal_(block.mlp.c_proj.weight, gain=0.02)
 
         # Инициализация позиционных эмбеддингов
         #nn.init.normal_(self.transformer.wpe.weight, std=0.02)
