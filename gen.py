@@ -4,18 +4,18 @@ from model import GPT, GPTConfig
 
 config = GPTConfig(
     vocab_size=50257,
-    block_size=255,
-    n_layer=8,
-    n_head=8,
-    n_embd=512,
-    dropout=0.05,
-    drop_path_rate=0.05,
-    batch_size=40,
-    lr=3e-4,
+    block_size=128,
+    n_layer=4,
+    n_head=4,
+    n_embd=256,
+    dropout=0.15,
+    drop_path_rate=0.1,
+    batch_size=80,
+    lr=1e-4,
     bias=False,
-    mode='train_256_t',
-    stride=256,
-    weight_decay=0.01
+    mode='little_f',
+    stride=128,
+    weight_decay=0.05
 )
 
 #CHECKPOINT_PATH = f"latest_checkpoint.pth"  # путь до чекпоинта
@@ -34,7 +34,7 @@ model.eval()
 
 enc = tiktoken.get_encoding(ENCODING)
 
-def generate_text(prompt, max_new_tokens=100, temperature=1, top_k=30):
+def generate_text(prompt, max_new_tokens=100, temperature=0.8, top_k=15):
     input_ids = torch.tensor([enc.encode(prompt)], dtype=torch.long).to(DEVICE)
 
     with torch.no_grad():
@@ -54,6 +54,6 @@ if __name__ == "__main__":
         if prompt.lower() in ["exit", "quit"]:
             break
 
-        output = generate_text(prompt, max_new_tokens=30)
+        output = generate_text(prompt, max_new_tokens=200)
         print("\nСгенерированный текст:\n")
         print(output)

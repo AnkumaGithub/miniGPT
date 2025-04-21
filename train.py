@@ -37,11 +37,11 @@ class GPTDataset(Dataset):
 
     def __getitem__(self, idx):
         start = idx * self.stride
-        end = start + self.block_size + 1
+        end = start + self.block_size
         # Проверка, что end не превышает длину данных
         if end > len(self.data):
             # Возвращаем последний доступный блок
-            start = max(0, len(self.data) - self.block_size - 1)
+            start = max(0, len(self.data) - self.block_size)
             end = len(self.data)
         chunk = torch.from_numpy(self.data[start:end].astype(np.int64)).long()
         return chunk[:-1], chunk[1:]
@@ -98,18 +98,18 @@ def train():
     # Конфигурация для RTX 3060
     config = GPTConfig(
         vocab_size=50257,
-        block_size = 255,
-        n_layer=8,
-        n_head=8,
-        n_embd=512,
-        dropout=0.05,
-        drop_path_rate=0.05,
-        batch_size = 40,
-        lr = 3e-4,
+        block_size = 128,
+        n_layer=4,
+        n_head=4,
+        n_embd=256,
+        dropout=0.15,
+        drop_path_rate=0.1,
+        batch_size = 80,
+        lr = 1e-4,
         bias=False,
-        mode='train_256_t',
-        stride = 256,
-        weight_decay = 0.01
+        mode='little_f',
+        stride = 128,
+        weight_decay = 0.05
     )
 
     # Инициализация Comet ML
@@ -185,7 +185,9 @@ def train():
         # Оптимизатор и скейлер
         warmup_iters = 500
         min_lr = 3e-5
-        lr_decay_iters = 1 * len(train_loader)  # Общее число итераций
+        current_epochs = 4
+        new_it = 0
+        lr_decay_iters = current_epochs * len(train_loader)  # Общее число итераций
 
         # Оптимизатор и скейлер
         scaler = torch.amp.GradScaler(device='cuda')
@@ -200,7 +202,6 @@ def train():
         # Чекпоинтинг
         start_epoch = 1
         global_step = 0
-        total_train_steps = 3 * len(train_loader)  # 3 текущие + 11 будущих эпох
         planned_total_epochs = 1
         if os.path.exists(checkpoint_name):
             with torch.serialization.safe_globals([GPTConfig]):
@@ -208,7 +209,7 @@ def train():
             remaining_epochs = planned_total_epochs - checkpoint['epoch']
             total_train_steps = remaining_epochs * len(train_loader)
             model.load_state_dict(checkpoint['model'])
-            optimizer.load_state_dict(checkpoint['optimizer'])
+            #optimizer.load_state_dict(checkpoint['optimizer'])
             start_epoch = checkpoint['epoch'] + 1
             global_step = checkpoint['global_step']
             logging.info(f"Загружен чекпоинт эпохи {checkpoint['epoch']} для режима {config.mode}")
@@ -217,7 +218,6 @@ def train():
         experiment.log_other("train_samples", len(train_loader))
         experiment.log_other("val_samples", len(val_loader))
         experiment.log_other("stride", config.stride)
-        current_epochs = 1
         perplexity = None
         for epoch in range(start_epoch, start_epoch + current_epochs):
             torch.cuda.reset_peak_memory_stats()
@@ -253,10 +253,10 @@ def train():
 
                     if iter_step % 50 == 0:
                         log_gradients(model, experiment, global_step)
-                        log_memory_usage(experiment, global_step)
+                        #log_memory_usage(experiment, global_step)
 
                     # Gradient Clipping
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=2.0)
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
 
                     scaler.step(optimizer)
                     scaler.update()

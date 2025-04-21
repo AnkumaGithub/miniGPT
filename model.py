@@ -11,18 +11,18 @@ from dataclasses import dataclass
 @dataclass
 class GPTConfig:
     vocab_size: int = 50257
-    n_layer: int = 8
-    n_head: int = 8
-    n_embd: int = 512
-    block_size: int = 255
-    batch_size: int = 40
-    lr: float = 3e-4
-    dropout: float = 0.05
-    drop_path_rate: float = 0.05
+    n_layer: int = 4
+    n_head: int = 4
+    n_embd: int = 256
+    block_size: int = 128
+    batch_size: int = 80
+    lr: float = 1e-4
+    dropout: float = 0.15
+    drop_path_rate: float = 0.1
     bias: bool = False  # Можно включить если нужно
-    mode: str = 'train_256_t'
-    stride: int = 256
-    weight_decay: float = 0.01
+    mode: str = 'little_f'
+    stride: int = 128
+    weight_decay: float = 0.05
 
 
 class RotaryPositionalEmbeddings(nn.Module):
@@ -187,7 +187,6 @@ class GPT(nn.Module):
         self.config = config
         self.transformer = nn.ModuleDict(dict(
             wte=nn.Embedding(config.vocab_size, config.n_embd),
-            wpe=nn.Embedding(config.block_size, config.n_embd),
             drop=nn.Dropout(config.dropout),
             h=nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
             ln_f=nn.LayerNorm(config.n_embd, bias=config.bias),
@@ -206,7 +205,7 @@ class GPT(nn.Module):
 
     def _init_weights(self, module):
         if isinstance(module, nn.Linear):
-            nn.init.xavier_normal_(module.weight, gain=0.02)
+            nn.init.xavier_uniform_(module.weight, gain=0.02)
             if module.bias is not None:
                 nn.init.zeros_(module.bias)
         elif isinstance(module, nn.Embedding):
@@ -226,12 +225,9 @@ class GPT(nn.Module):
 
     def forward(self, idx, past_key_values=None, use_cache=False):
         B, T = idx.size()
-        pos = torch.arange(0, T, device=idx.device).unsqueeze(0)
-        pos = torch.clamp(pos, 0, self.config.block_size - 1)
 
         tok_emb = self.transformer.wte(idx)
-        pos_emb = self.transformer.wpe(pos)
-        x = self.transformer.drop(tok_emb + pos_emb)
+        x = self.transformer.drop(tok_emb)
 
         new_key_values = [] if use_cache else None
         for i, block in enumerate(self.transformer.h):
@@ -247,14 +243,10 @@ class GPT(nn.Module):
         return (logits, new_key_values) if use_cache else logits
 
     def configure_optimizers(self, weight_decay, learning_rate, betas, device_type):
-        # start with all of the candidate parameters
         param_dict = {pn: p for pn, p in self.named_parameters()}
-        # filter out those that do not require grad
         param_dict = {pn: p for pn, p in param_dict.items() if p.requires_grad}
-        # create optim groups. Any parameters that is 2D will be weight decayed, otherwise no.
-        # i.e. all weight tensors in matmuls + embeddings decay, all biases and layernorms don't.
-        decay_params = [p for n, p in param_dict.items() if p.dim() >= 2]
-        nodecay_params = [p for n, p in param_dict.items() if p.dim() < 2]
+        decay_params = [p for n, p in param_dict.items() if p.dim() >= 2 and "bias" not in n]
+        nodecay_params = [p for n, p in param_dict.items() if p.dim() < 2 or "bias" in n]
         optim_groups = [
             {'params': decay_params, 'weight_decay': weight_decay},
             {'params': nodecay_params, 'weight_decay': 0.0}
