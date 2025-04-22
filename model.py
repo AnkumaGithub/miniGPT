@@ -265,7 +265,7 @@ class GPT(nn.Module):
         return optimizer
 
     @torch.inference_mode()
-    def generate(self, idx, max_new_tokens=100, temperature=1.0, top_k=None, stop_token=None, echo=None) -> torch.Tensor:
+    def generate(self, idx, max_new_tokens=100, temperature=1.0, top_p=None, repetition_penalty=None, stop_token=None, echo=None) -> torch.Tensor:
         self.eval()
         original_len = idx.size(1)
         past_key_values = None
@@ -291,12 +291,23 @@ class GPT(nn.Module):
             )
             past_key_values = new_key_values
 
+
             # Сэмплинг следующего токена
             logits = logits[:, -1, :] / max(temperature, 1e-5)
-            if top_k is not None:
-                top_k = min(top_k, logits.size(-1)) # Ограничение top_k размером словаря
-                v, _ = torch.topk(logits, top_k)
-                logits[logits < v[:, [-1]]] = -float('Inf')
+
+            if repetition_penalty != 1.0:
+                unique_tokens, counts = torch.unique(idx, return_counts=True)
+                for token, count in zip(unique_tokens, counts):
+                    if count > 1:
+                        logits[:, token] /= repetition_penalty ** (count - 1)
+            if top_p is not None and top_p < 1.0:
+                sorted_logits, sorted_indices = torch.sort(logits, descending=True)
+                cumulative_probs = torch.cumsum(F.softmax(sorted_logits, dim=-1), dim=-1)
+                sorted_indices_to_remove = cumulative_probs > top_p
+                sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
+                sorted_indices_to_remove[..., 0] = 0
+                indices_to_remove = sorted_indices_to_remove.scatter(-1, sorted_indices, sorted_indices_to_remove)
+                logits = logits.masked_fill(indices_to_remove, float('-inf'))
 
             probs = F.softmax(logits, dim=-1)
             idx_next = torch.multinomial(probs, num_samples=1)
