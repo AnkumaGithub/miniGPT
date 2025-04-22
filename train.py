@@ -23,7 +23,7 @@ logging.basicConfig(level=logging.INFO,
 
 class GPTDataset(Dataset):
     def __init__(self, split, block_size, stride=256):
-        self.data_path = f'E:/PyCharm 2024.3.5/projects/data/tinystories/{split}.bin'
+        self.data_path = f'E:/PyCharm 2024.3.5/projects/data/wikitext/{split}.bin'
         if not os.path.exists(self.data_path):
             raise FileNotFoundError(f"Data file {self.data_path} not found")
 
@@ -72,10 +72,10 @@ def log_gradients(model, experiment, step):
     for name, param in model.named_parameters():
         if param.grad is not None:
             grad = param.grad
-            grad_mean = grad.abs().mean().item()
             grad_max = grad.abs().max().item()
-            grad_data[f"grad/{name}_mean"] = grad_mean
+            grad_mean = grad.abs().mean().item()
             grad_data[f"grad/{name}_max"] = grad_max
+            grad_data[f"grad/{name}_mean"] = grad_mean
             # Вывод в консоль для проверки
             if "lm_head" in name:
                 logging.info(f"[DEBUG] {name} | max_grad={grad_max:.4f}")
@@ -98,17 +98,17 @@ def train():
     # Конфигурация для RTX 3060
     config = GPTConfig(
         vocab_size=50257,
-        block_size = 128,
-        n_layer=4,
-        n_head=4,
-        n_embd=256,
-        dropout=0.15,
+        block_size = 256,
+        n_layer=6,
+        n_head=8,
+        n_embd=512,
+        dropout=0.1,
         drop_path_rate=0.1,
-        batch_size = 80,
+        batch_size = 40,
         lr = 1e-4,
         bias=False,
-        mode='little_f',
-        stride = 128,
+        mode='webtext_new',
+        stride = 512,
         weight_decay = 0.05
     )
 
@@ -161,7 +161,7 @@ def train():
             num_workers = min(4, os.cpu_count() // 4)
             print("DataLoader-train-start")
             train_loader = DataLoader(
-                GPTDataset('train_256', config.block_size, stride=config.stride),
+                GPTDataset('wiki_train_256', config.block_size, stride=config.stride),
                 batch_size=config.batch_size,
                 shuffle=True,
                 num_workers=num_workers,
@@ -171,7 +171,7 @@ def train():
             print("DataLoader-train-end")
             print("DataLoader-val-start")
             val_loader = DataLoader(
-                GPTDataset('val_256', config.block_size, stride=config.stride),
+                GPTDataset('wiki_val_256', config.block_size, stride=config.stride),
                 batch_size=config.batch_size,
                 num_workers=num_workers,
                 pin_memory=False,
@@ -185,7 +185,7 @@ def train():
         # Оптимизатор и скейлер
         warmup_iters = 500
         min_lr = 3e-5
-        current_epochs = 4
+        current_epochs = 1
         new_it = 0
         lr_decay_iters = current_epochs * len(train_loader)  # Общее число итераций
 
@@ -302,18 +302,6 @@ def train():
                     "gpu_memory_allocated": torch.cuda.memory_allocated() / 1e9,
                     "gpu_memory_reserved": torch.cuda.memory_reserved() / 1e9
                 }, step=global_step)
-
-                for name, param in model.named_parameters():
-                    experiment.log_histogram_3d(
-                        values=param.data.cpu().numpy().flatten(),
-                        name=f"weights/{name}",
-                        step=epoch
-                    )
-
-                    experiment.log_metrics({
-                        f"weights/{name}_mean": param.data.mean().item(),
-                        f"weights/{name}_std": param.data.std().item(),
-                    }, step=epoch)
 
                 # чекпоинт
                 checkpoint = {

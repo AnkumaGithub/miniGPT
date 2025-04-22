@@ -11,22 +11,22 @@ from dataclasses import dataclass
 @dataclass
 class GPTConfig:
     vocab_size: int = 50257
-    n_layer: int = 4
-    n_head: int = 4
-    n_embd: int = 256
-    block_size: int = 128
-    batch_size: int = 80
+    n_layer: int = 6
+    n_head: int = 8
+    n_embd: int = 512
+    block_size: int = 256
+    batch_size: int = 40
     lr: float = 1e-4
-    dropout: float = 0.15
+    dropout: float = 0.1
     drop_path_rate: float = 0.1
     bias: bool = False  # Можно включить если нужно
     mode: str = 'little_f'
-    stride: int = 128
-    weight_decay: float = 0.05
+    stride: int = 256
+    weight_decay: float = 0.1
 
 
 class RotaryPositionalEmbeddings(nn.Module):
-    def __init__(self, head_dim, max_seq_len=4096):
+    def __init__(self, head_dim):
         super().__init__()
         assert head_dim % 2 == 0 # dim должен быть чётным
         self.head_dim = head_dim
@@ -41,7 +41,7 @@ class RotaryPositionalEmbeddings(nn.Module):
     def forward(self, x, offset=0):
         seq_len = x.size(-2) # Длина текущего фрагмента последовательности
         # Глобальные позиции токенов [1, seq_len, 1]
-        t = torch.arange(offset, offset + seq_len, dtype=self.inv_freq.dtype, device=x.device).unsqueeze(0).unsqueeze(-1)
+        t = torch.arange(seq_len, dtype=self.inv_freq.dtype, device=x.device).unsqueeze(0).unsqueeze(-1)
         freqs = t * self.inv_freq # [1, seq_len, D//2]
         emb = torch.cat((freqs, freqs), dim=-1) #[1, seq_len, D]
         cos = emb.cos().unsqueeze(1) # [1, 1, seq_len, D]
@@ -83,40 +83,30 @@ class CausalSelfAttention(nn.Module):
         k = k.view(B, T, self.n_head, self.head_dim).transpose(1, 2)
         v = v.view(B, T, self.n_head, self.head_dim).transpose(1, 2)
         # q k v - [Batch, n_head, seq_len, head_dim] тк emb_dim = n_head * head_dim
-        if past_key_values is not None: # Складываем кэш
-            k_prev, v_prev = past_key_values
-            k = torch.cat([k_prev, k], dim=2)
-            v = torch.cat([v_prev, v], dim=2)
 
         offset = k.size(2) - T # Если есть kv то k-size() - T скажет с какой позиции обрабатывать
         with torch.amp.autocast(device_type='cuda', enabled=False):   # Для стабильности ротаций
-            q = self.rope(q, offset) #[query, offset]
-            k = self.rope(k, offset) #[keys, offset]
-        new_key_values = (k, v) if use_cache else None
+            q = self.rope(q) #[query, offset]
+            k = self.rope(k) #[keys, offset]
 
         if self.flash:
             dropout_p = self.attn_dropout.p if self.training else 0
             y = F.scaled_dot_product_attention(
                 q, k, v,
                 attn_mask=None,
-                dropout_p=dropout_p,
+                dropout_p=dropout_p if self.training else 0,
                 is_causal=True
             )
         else:
-            # Ручная реализация внимания с маской
             att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
-            total_len = T + (past_key_values[0].size(2) if past_key_values else 0)
-            mask = torch.tril(torch.ones(T, total_len, device=x.device))
-            mask = mask[:, -k.size(2):]  # Обрезаем до актуальной длины ключей
-            mask = mask.unsqueeze(0).unsqueeze(0)
-            att = att.masked_fill(mask == 0, float('-inf'))
+            att = att.masked_fill(self.bias[:, :T, :T] == 0, float('-inf'))
             att = F.softmax(att, dim=-1)
             att = self.attn_dropout(att)
             y = att @ v
 
         y = y.transpose(1, 2).contiguous().view(B, T, C)
         y = self.resid_dropout(self.c_proj(y))
-        return y, new_key_values
+        return y
 
 class MLP(nn.Module):
     def __init__(self, config):
@@ -165,11 +155,11 @@ class Block(nn.Module):
         self.mlp = MLP(config)
         self.drop_path = DropPath(config.drop_path_rate) if config.drop_path_rate > 0 else nn.Identity()
 
-    def forward(self, x, past_key_values=None, use_cache=False):
+    def forward(self, x):
         # Attention block
         residual = x
         x = self.ln_1(x)
-        attn_out, new_kv = self.attn(x, past_key_values, use_cache)
+        attn_out = self.attn(x)
         x = residual + self.drop_path(attn_out)
 
         # MLP block
@@ -178,7 +168,7 @@ class Block(nn.Module):
         mlp_out = self.mlp(x)
         x = residual + self.drop_path(mlp_out)
 
-        return (x, new_kv) if use_cache else x
+        return x
 
 
 class GPT(nn.Module):
@@ -231,16 +221,11 @@ class GPT(nn.Module):
 
         new_key_values = [] if use_cache else None
         for i, block in enumerate(self.transformer.h):
-            past_kv = past_key_values[i] if past_key_values else None
-            if use_cache:
-                x, kv = block(x, past_kv, use_cache=True)
-                new_key_values.append(kv)
-            else:
-                x = block(x, past_kv, use_cache)
+            x = block(x)
 
         #x = F.layer_norm(x, (self.config.n_embd,))  #Дополнительная нормализация
         logits = self.lm_head(x)
-        return (logits, new_key_values) if use_cache else logits
+        return logits
 
     def configure_optimizers(self, weight_decay, learning_rate, betas, device_type):
         param_dict = {pn: p for pn, p in self.named_parameters()}
@@ -265,38 +250,46 @@ class GPT(nn.Module):
         return optimizer
 
     @torch.inference_mode()
-    def generate(self, idx, max_new_tokens=100, temperature=1.0, top_k=None, stop_token=None, echo=None) -> torch.Tensor:
+    def generate(self, idx, max_new_tokens=100, temperature=1.0, top_p=None, stop_token=None, echo=None, repetition_penalty=1.0) -> torch.Tensor:
         self.eval()
         original_len = idx.size(1)
-        past_key_values = None
 
         for _ in range(max_new_tokens):
-            if past_key_values is None:
-                input_ids = idx
-            else:
-                input_ids = idx[:, -1:]
+            input_ids = idx
 
             # Проверка превышения максимальной длины
-            current_length = input_ids.size(1) + (past_key_values[0][0].size(2) if past_key_values else 0)
+            current_length = input_ids.size(1)
             if current_length >= self.config.block_size:
                 keep_len = self.config.block_size - 1
                 input_ids = input_ids[:, -keep_len:]
-                past_key_values = [(k[..., -keep_len:, :], v[..., -keep_len:, :]) for (k, v) in past_key_values]
 
             # Прямой проход
-            logits, new_key_values = self(
-                input_ids,
-                past_key_values=past_key_values,
-                use_cache=True
-            )
-            past_key_values = new_key_values
+            logits = self(input_ids)
 
             # Сэмплинг следующего токена
             logits = logits[:, -1, :] / max(temperature, 1e-5)
-            if top_k is not None:
-                top_k = min(top_k, logits.size(-1)) # Ограничение top_k размером словаря
-                v, _ = torch.topk(logits, top_k)
-                logits[logits < v[:, [-1]]] = -float('Inf')
+
+            # Применяем штраф за повторения
+            if repetition_penalty != 1.0:
+                unique_tokens, counts = torch.unique(idx, return_counts=True)
+                for token, count in zip(unique_tokens, counts):
+                    if count > 1:  # Штрафуем только повторяющиеся токены
+                        logits[:, token] /= repetition_penalty ** (count - 1)
+
+            if top_p is not None:
+                # Сортируем логиты
+                sorted_logits, sorted_indices = torch.sort(logits, descending=True)
+                cumulative_probs = torch.cumsum(F.softmax(sorted_logits, dim=-1), dim=-1)
+
+                # Удаляем токены с cumulative_probs > top_p
+                sorted_indices_to_remove = cumulative_probs > top_p
+                # Сдвигаем на 1, чтобы оставить первый токен, превышающий порог
+                sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
+                sorted_indices_to_remove[..., 0] = 0
+
+                # Возвращаем логиты в исходный порядок
+                indices_to_remove = sorted_indices_to_remove.scatter(-1, sorted_indices, sorted_indices_to_remove)
+                logits = logits.masked_fill(indices_to_remove, float('-inf'))
 
             probs = F.softmax(logits, dim=-1)
             idx_next = torch.multinomial(probs, num_samples=1)
