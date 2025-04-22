@@ -23,7 +23,7 @@ logging.basicConfig(level=logging.INFO,
 
 class GPTDataset(Dataset):
     def __init__(self, split, block_size, stride=256):
-        self.data_path = f'E:/PyCharm 2024.3.5/projects/data/wikitext/{split}.bin'
+        self.data_path = f'E:/PyCharm 2024.3.5/projects/data/openwebtext/{split}.bin'
         if not os.path.exists(self.data_path):
             raise FileNotFoundError(f"Data file {self.data_path} not found")
 
@@ -102,13 +102,13 @@ def train():
         n_layer=6,
         n_head=8,
         n_embd=512,
-        dropout=0.1,
-        drop_path_rate=0.1,
+        dropout=0.05,
+        drop_path_rate=0.05,
         batch_size = 40,
         lr = 1e-4,
         bias=False,
-        mode='webtext_new',
-        stride = 512,
+        mode='webtext_without_qv_rope',
+        stride = 256,
         weight_decay = 0.05
     )
 
@@ -161,7 +161,7 @@ def train():
             num_workers = min(4, os.cpu_count() // 4)
             print("DataLoader-train-start")
             train_loader = DataLoader(
-                GPTDataset('wiki_train_256', config.block_size, stride=config.stride),
+                GPTDataset('train_stride_64_4h_50m', config.block_size, stride=config.stride),
                 batch_size=config.batch_size,
                 shuffle=True,
                 num_workers=num_workers,
@@ -171,7 +171,7 @@ def train():
             print("DataLoader-train-end")
             print("DataLoader-val-start")
             val_loader = DataLoader(
-                GPTDataset('wiki_val_256', config.block_size, stride=config.stride),
+                GPTDataset('val_stride_64_4h_3m', config.block_size, stride=config.stride),
                 batch_size=config.batch_size,
                 num_workers=num_workers,
                 pin_memory=False,
