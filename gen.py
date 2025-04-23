@@ -4,17 +4,17 @@ from model import GPT, GPTConfig
 
 config = GPTConfig(
     vocab_size=50257,
-    block_size=128,
-    n_layer=4,
-    n_head=4,
-    n_embd=256,
-    dropout=0.15,
-    drop_path_rate=0.1,
-    batch_size=80,
+    block_size=256,
+    n_layer=6,
+    n_head=8,
+    n_embd=512,
+    dropout=0.05,
+    drop_path_rate=0.05,
+    batch_size=40,
     lr=1e-4,
     bias=False,
-    mode='little_f',
-    stride=128,
+    mode='webtext_new',
+    stride=192,
     weight_decay=0.05
 )
 
@@ -34,7 +34,7 @@ model.eval()
 
 enc = tiktoken.get_encoding(ENCODING)
 
-def generate_text(prompt, max_new_tokens=100, temperature=0.8, top_k=15):
+def generate_text(prompt, max_new_tokens=100, temperature=1.5, top_p=0.95, repetition_penalty=1.2):
     input_ids = torch.tensor([enc.encode(prompt)], dtype=torch.long).to(DEVICE)
 
     with torch.no_grad():
@@ -42,7 +42,8 @@ def generate_text(prompt, max_new_tokens=100, temperature=0.8, top_k=15):
             input_ids,
             max_new_tokens=max_new_tokens,
             temperature=temperature,
-            top_k=top_k,
+            top_p=top_p,
+            repetition_penalty=repetition_penalty,
             echo=True
         )[0].tolist()
 
@@ -54,6 +55,6 @@ if __name__ == "__main__":
         if prompt.lower() in ["exit", "quit"]:
             break
 
-        output = generate_text(prompt, max_new_tokens=200)
+        output = generate_text(prompt, max_new_tokens=50)
         print("\nСгенерированный текст:\n")
         print(output)
