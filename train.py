@@ -1,5 +1,6 @@
 from comet_ml import Experiment
 import comet_ml
+import tiktoken
 import torch
 import numpy as np
 from tqdm import tqdm
@@ -23,7 +24,7 @@ logging.basicConfig(level=logging.INFO,
 
 class GPTDataset(Dataset):
     def __init__(self, split, block_size, stride=256):
-        self.data_path = f'E:/PyCharm 2024.3.5/projects/data/openwebtext/{split}.bin'
+        self.data_path = f'E:/PyCharm 2024.3.5/projects/data/wikitext/{split}.bin'
         if not os.path.exists(self.data_path):
             raise FileNotFoundError(f"Data file {self.data_path} not found")
 
@@ -97,19 +98,19 @@ def get_lr(it, learning_rate, warmup_iters, min_lr, lr_decay_iters):
 def train():
     # Конфигурация для RTX 3060
     config = GPTConfig(
-        vocab_size=50257,
-        block_size = 256,
-        n_layer=6,
-        n_head=8,
-        n_embd=512,
-        dropout=0.05,
+        vocab_size=50262,
+        block_size = 512,
+        n_layer=16,
+        n_head=12,
+        n_embd=768,
+        dropout=0.1,
         drop_path_rate=0.05,
-        batch_size = 40,
-        lr = 1e-4,
+        batch_size = 12,
+        lr = 3e-4,
         bias=False,
-        mode='webtext_new',
-        stride = 256,
-        weight_decay = 0.05
+        mode='wikitext',
+        stride = 384,
+        weight_decay = 0.1,
     )
 
     # Инициализация Comet ML
@@ -138,9 +139,21 @@ def train():
         "stride": config.stride,
     })
 
+    ENCODING = "gpt2"
+    SPECIAL_TOKENS = ["[Q]", "[A]", "[SEP]", "[EOS]", "[USER]", "[BOT]"]
+
+    enc = tiktoken.get_encoding(ENCODING)
+    enc = tiktoken.Encoding(
+        name=enc.name,
+        pat_str=enc._pat_str,
+        mergeable_ranks=enc._mergeable_ranks,
+        special_tokens={**enc._special_tokens, **{token: len(enc._mergeable_ranks) + i for i, token in enumerate(SPECIAL_TOKENS)}}
+    )
+
     try:
         # Инициализация модели с оптимизациями
         model = GPT(config).cuda()
+        dialog_mode = False
 
         # Проверка наличия CUDA
         if not torch.cuda.is_available():
@@ -161,7 +174,7 @@ def train():
             num_workers = min(4, os.cpu_count() // 4)
             print("DataLoader-train-start")
             train_loader = DataLoader(
-                GPTDataset('train_stride_256_4h_200m_1', config.block_size, stride=config.stride),
+                GPTDataset('wiki_train_256', config.block_size, stride=config.stride),
                 batch_size=config.batch_size,
                 shuffle=True,
                 num_workers=num_workers,
@@ -171,7 +184,7 @@ def train():
             print("DataLoader-train-end")
             print("DataLoader-val-start")
             val_loader = DataLoader(
-                GPTDataset('val_stride_128_4h_5m', config.block_size, stride=config.stride),
+                GPTDataset('wiki_val_256', config.block_size, stride=config.stride),
                 batch_size=config.batch_size,
                 num_workers=num_workers,
                 pin_memory=False,
@@ -183,9 +196,9 @@ def train():
             return
 
         # Оптимизатор и скейлер
-        warmup_iters = 500
+        warmup_iters = 800
         min_lr = 3e-5
-        current_epochs = 4
+        current_epochs = 2
         new_it = 0
         lr_decay_iters = current_epochs * len(train_loader)  # Общее число итераций
 

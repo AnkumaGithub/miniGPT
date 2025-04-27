@@ -10,23 +10,23 @@ from dataclasses import dataclass
 
 @dataclass
 class GPTConfig:
-    vocab_size: int = 50257
-    n_layer: int = 4
-    n_head: int = 4
-    n_embd: int = 256
-    block_size: int = 128
-    batch_size: int = 80
-    lr: float = 1e-4
-    dropout: float = 0.15
-    drop_path_rate: float = 0.1
+    vocab_size: int = 50260
+    n_layer: int = 12
+    n_head: int = 12
+    n_embd: int = 512
+    block_size: int = 256
+    batch_size: int = 40
+    lr: float = 3e-4
+    dropout: float = 0.1
+    drop_path_rate: float = 0.05
     bias: bool = False  # Можно включить если нужно
-    mode: str = 'little_f'
-    stride: int = 128
-    weight_decay: float = 0.05
+    mode: str = 'wikitext'
+    stride: int = 368
+    weight_decay: float = 0.1
 
 
-class RotaryPositionalEmbeddings(nn.Module):
-    def __init__(self, head_dim, max_seq_len=4096):
+class ROPE(nn.Module):
+    def __init__(self, head_dim):
         super().__init__()
         assert head_dim % 2 == 0 # dim должен быть чётным
         self.head_dim = head_dim
@@ -35,13 +35,15 @@ class RotaryPositionalEmbeddings(nn.Module):
         self.register_buffer("inv_freq", inv_freq, persistent=False)
 
     def rotate_half(self, x):
-        x1, x2 = x.chunk(2, dim=-1) # Если head_dim нечётный то поломается, можно x1 = x[..., : x.shape[-1] // 2] x2 = x[..., x.shape[-1] // 2 :]
+        x1 = x[..., : x.shape[-1] // 2]
+        x2 = x[..., x.shape[-1] // 2:]
         return torch.cat((-x2, x1), dim=-1)
 
     def forward(self, x, offset=0):
         seq_len = x.size(-2) # Длина текущего фрагмента последовательности
         # Глобальные позиции токенов [1, seq_len, 1]
-        t = torch.arange(offset, offset + seq_len, dtype=self.inv_freq.dtype, device=x.device).unsqueeze(0).unsqueeze(-1)
+        t = torch.arange(seq_len, dtype=self.inv_freq.dtype, device=x.device) + offset
+        t = t.unsqueeze(0).unsqueeze(-1)
         freqs = t * self.inv_freq # [1, seq_len, D//2]
         emb = torch.cat((freqs, freqs), dim=-1) #[1, seq_len, D]
         cos = emb.cos().unsqueeze(1) # [1, 1, seq_len, D]
@@ -49,15 +51,18 @@ class RotaryPositionalEmbeddings(nn.Module):
         return (x * cos) + (self.rotate_half(x) * sin) #[B, n_head, seq_len, D]
 
 
-class CausalSelfAttention(nn.Module):
+
+
+class SelfAttention(nn.Module):
     def __init__(self, config):
         super().__init__()
         assert config.n_embd % config.n_head == 0
         self.n_head = config.n_head
         self.n_embd = config.n_embd
         self.head_dim = config.n_embd // config.n_head
+        self.max_seq_len = config.block_size
 
-        self.rope = RotaryPositionalEmbeddings(self.head_dim)
+        self.rope = ROPE(self.head_dim)
         # преобразовываем в q k v
         self.q_attn = nn.Linear(config.n_embd, config.n_embd, bias=config.bias)
         self.v_attn = nn.Linear(config.n_embd, config.n_embd, bias=config.bias)
@@ -65,6 +70,8 @@ class CausalSelfAttention(nn.Module):
         self.c_proj = nn.Linear(config.n_embd, config.n_embd, bias=config.bias)
         self.attn_dropout = nn.Dropout(config.dropout)
         self.resid_dropout = nn.Dropout(config.dropout)
+
+        self.register_buffer("mask", torch.tril(torch.ones(config.block_size, config.block_size)), persistent=False)
 
         self.flash = hasattr(F, 'scaled_dot_product_attention')
         if not self.flash:
@@ -106,7 +113,7 @@ class CausalSelfAttention(nn.Module):
             # Ручная реализация внимания с маской
             att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
             total_len = T + (past_key_values[0].size(2) if past_key_values else 0)
-            mask = torch.tril(torch.ones(T, total_len, device=x.device))
+            mask = torch.tril(torch.ones(T, T, device=x.device))
             mask = mask[:, -k.size(2):]  # Обрезаем до актуальной длины ключей
             mask = mask.unsqueeze(0).unsqueeze(0)
             att = att.masked_fill(mask == 0, float('-inf'))
@@ -121,25 +128,33 @@ class CausalSelfAttention(nn.Module):
 class MLP(nn.Module):
     def __init__(self, config):
         super().__init__()
-        self.c_fc = nn.Linear(config.n_embd, config.n_embd * 4, bias=config.bias)
-        self.activ = nn.GELU()
-        self.c_proj = nn.Linear(config.n_embd * 4, config.n_embd, bias=config.bias)
+        self.gate_proj = nn.Linear(config.n_embd, config.n_embd * 4, bias=config.bias)
+        self.up_proj = nn.Linear(config.n_embd, config.n_embd * 4, bias=config.bias)
+        self.down_proj = nn.Linear(config.n_embd * 4, config.n_embd, bias=config.bias)
+        self.act_fn = nn.GELU()
         self.dropout = nn.Dropout(config.dropout)
 
     def _forward_impl(self, x):
-        return self.dropout(self.c_proj(self.activ(self.c_fc(x))))
+        return self.dropout(self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x)))
 
     def forward(self, x):
         return checkpoint(self._forward_impl, x, use_reentrant=False)
 
-class LayerNorm(nn.Module):
-    def __init__(self, ndim, bias):
+class RMSNorm(nn.Module):
+    def __init__(self, hidden_size, eps=1e-6):
+        """
+        LlamaRMSNorm is equivalent to T5LayerNorm
+        """
         super().__init__()
-        self.weight = nn.Parameter(torch.ones(ndim))
-        self.bias = nn.Parameter(torch.zeros(ndim)) if bias else None
+        self.weight = nn.Parameter(torch.ones(hidden_size))
+        self.variance_epsilon = eps
 
-    def forward(self, input):
-        return F.layer_norm(input, self.weight.shape, self.weight, self.bias, 1e-5)
+    def forward(self, hidden_states):
+        input_dtype = hidden_states.dtype
+        hidden_states = hidden_states.to(torch.float32)
+        variance = hidden_states.pow(2).mean(-1, keepdim=True)
+        hidden_states = hidden_states * torch.rsqrt(variance + self.variance_epsilon)
+        return self.weight * hidden_states.to(input_dtype)
 
 class DropPath(nn.Module):
     def __init__(self, drop_prob):
@@ -159,9 +174,9 @@ class DropPath(nn.Module):
 class Block(nn.Module):
     def __init__(self, config):
         super().__init__()
-        self.ln_1 = LayerNorm(config.n_embd, bias=config.bias)
-        self.attn = CausalSelfAttention(config)
-        self.ln_2 = LayerNorm(config.n_embd, bias=config.bias)
+        self.ln_1 = RMSNorm(config.n_embd)
+        self.attn = SelfAttention(config)
+        self.ln_2 = RMSNorm(config.n_embd)
         self.mlp = MLP(config)
         self.drop_path = DropPath(config.drop_path_rate) if config.drop_path_rate > 0 else nn.Identity()
 
@@ -189,7 +204,7 @@ class GPT(nn.Module):
             wte=nn.Embedding(config.vocab_size, config.n_embd),
             drop=nn.Dropout(config.dropout),
             h=nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
-            ln_f=nn.LayerNorm(config.n_embd, bias=config.bias),
+            ln_f=nn.RMSNorm(config.n_embd),
         ))
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
         self.transformer.wte.weight = self.lm_head.weight
@@ -200,28 +215,14 @@ class GPT(nn.Module):
             if pn.endswith('c_proj.weight'):
                 torch.nn.init.normal_(p, mean=0.0, std=0.02 / math.sqrt(2 * config.n_layer))
 
-        # Дополнительная инициализация для стабильности
-        #self._additional_init()
 
     def _init_weights(self, module):
         if isinstance(module, nn.Linear):
-            nn.init.xavier_uniform_(module.weight, gain=0.02)
+            nn.init.normal_(module.weight, mean=0.0, std=0.02)
             if module.bias is not None:
                 nn.init.zeros_(module.bias)
         elif isinstance(module, nn.Embedding):
             nn.init.normal_(module.weight, mean=0.0, std=0.02)
-        elif isinstance(module, nn.LayerNorm):
-            if module.bias is not None:
-                nn.init.zeros_(module.bias)
-            nn.init.ones_(module.weight)
-
-    def _additional_init(self): # У модели были огромные градиенты
-
-        for block in self.transformer.h:
-            nn.init.xavier_normal_(block.mlp.c_proj.weight, gain=0.02)
-
-        # Инициализация позиционных эмбеддингов
-        #nn.init.normal_(self.transformer.wpe.weight, std=0.02)
 
     def forward(self, idx, past_key_values=None, use_cache=False):
         B, T = idx.size()
@@ -255,7 +256,6 @@ class GPT(nn.Module):
         num_nodecay_params = sum(p.numel() for p in nodecay_params)
         print(f"num decayed parameter tensors: {len(decay_params)}, with {num_decay_params:,} parameters")
         print(f"num non-decayed parameter tensors: {len(nodecay_params)}, with {num_nodecay_params:,} parameters")
-        # Create AdamW optimizer and use the fused version if it is available
         fused_available = 'fused' in inspect.signature(torch.optim.AdamW).parameters
         use_fused = fused_available and device_type == 'cuda'
         extra_args = dict(fused=True) if use_fused else dict()
@@ -265,47 +265,69 @@ class GPT(nn.Module):
         return optimizer
 
     @torch.inference_mode()
-    def generate(self, idx, max_new_tokens=100, temperature=1.0, top_p=None, repetition_penalty=None, stop_token=None, echo=None) -> torch.Tensor:
+    def generate(self,
+                 idx,
+                 max_new_tokens=100,
+                 temperature=1.0,
+                 top_p=None,
+                 stop_token=None,
+                 cho=None,
+                 bad_words_ids=None,
+                 repetition_penalty=1.0) -> torch.Tensor:
+
         self.eval()
         original_len = idx.size(1)
         past_key_values = None
 
         for _ in range(max_new_tokens):
-            if past_key_values is None:
-                input_ids = idx
+            input_ids = idx
+
+            if past_key_values is not None:
+                input_ids = idx[:, -1:]  # Берём только последний токен
             else:
-                input_ids = idx[:, -1:]
+                input_ids = idx
 
             # Проверка превышения максимальной длины
             current_length = input_ids.size(1) + (past_key_values[0][0].size(2) if past_key_values else 0)
             if current_length >= self.config.block_size:
                 keep_len = self.config.block_size - 1
                 input_ids = input_ids[:, -keep_len:]
-                past_key_values = [(k[..., -keep_len:, :], v[..., -keep_len:, :]) for (k, v) in past_key_values]
+                # Обрезаем past_key_values до максимальной длины
+                past_key_values = [
+                    (k[:, :, -keep_len:, :], v[:, :, -keep_len:, :])
+                    for (k, v) in past_key_values
+                ] if past_key_values else None
 
-            # Прямой проход
-            logits, new_key_values = self(
-                input_ids,
-                past_key_values=past_key_values,
-                use_cache=True
-            )
-            past_key_values = new_key_values
-
+            # Прямой проход с использованием past_key_values
+            logits, new_kv = self(input_ids, past_key_values=past_key_values, use_cache=True)
+            past_key_values = new_kv  # Обновляем кэш
 
             # Сэмплинг следующего токена
             logits = logits[:, -1, :] / max(temperature, 1e-5)
 
+            if bad_words_ids is not None:
+                for bad_word_id in bad_words_ids:
+                    logits[:, bad_word_id] = -float('inf')
+
+            # Применяем штраф за повторения
             if repetition_penalty != 1.0:
                 unique_tokens, counts = torch.unique(idx, return_counts=True)
                 for token, count in zip(unique_tokens, counts):
-                    if count > 1:
+                    if count > 1:  # Штрафуем только повторяющиеся токены
                         logits[:, token] /= repetition_penalty ** (count - 1)
-            if top_p is not None and top_p < 1.0:
+
+            if top_p is not None:
+                # Сортируем логиты
                 sorted_logits, sorted_indices = torch.sort(logits, descending=True)
                 cumulative_probs = torch.cumsum(F.softmax(sorted_logits, dim=-1), dim=-1)
+
+                # Удаляем токены с cumulative_probs > top_p
                 sorted_indices_to_remove = cumulative_probs > top_p
+                # Сдвигаем на 1, чтобы оставить первый токен, превышающий порог
                 sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
                 sorted_indices_to_remove[..., 0] = 0
+
+                # Возвращаем логиты в исходный порядок
                 indices_to_remove = sorted_indices_to_remove.scatter(-1, sorted_indices, sorted_indices_to_remove)
                 logits = logits.masked_fill(indices_to_remove, float('-inf'))
 
