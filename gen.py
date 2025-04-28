@@ -9,12 +9,12 @@ config = GPTConfig(
     n_head=12,
     n_embd=768,
     dropout=0.1,
-    drop_path_rate=0.05,
+    drop_path_rate=0.1,
     batch_size=12,
     lr=3e-4,
     bias=False,
-    mode='wikitext',
-    stride=384,
+    mode='ts',
+    stride=368,
     weight_decay=0.1,
 )
 
@@ -43,8 +43,8 @@ enc = tiktoken.Encoding(
     special_tokens={**enc._special_tokens, **{token: len(enc._mergeable_ranks) + i for i, token in enumerate(SPECIAL_TOKENS)}}
 )
 
-def generate_text(prompt, max_new_tokens=100, temperature=1.4, top_p=0.95, repetition_penalty=1.5, stop_token=None):
-    input_ids = torch.tensor([enc.encode(prompt)], dtype=torch.long).to(DEVICE)
+def generate_text(prompt, max_new_tokens=400, temperature=1.2, top_p=0.98, repetition_penalty=1.5, stop_token="[EOS]"):
+    input_ids = torch.tensor([enc.encode(prompt, allowed_special=set(SPECIAL_TOKENS))], dtype=torch.long).to(DEVICE)
 
     with torch.no_grad():
         output_ids = model.generate(
@@ -54,10 +54,17 @@ def generate_text(prompt, max_new_tokens=100, temperature=1.4, top_p=0.95, repet
             top_p=top_p,
             repetition_penalty=repetition_penalty,
             echo=True,
-            stop_token=stop_token,
+            stop_token=enc.encode(stop_token, allowed_special=set(SPECIAL_TOKENS))[0] if stop_token else None,
+            bad_words_ids=[[enc.encode("[Q]", allowed_special=set(SPECIAL_TOKENS))[0]]]
         )[0].tolist()
 
     return enc.decode(output_ids)
+
+def ask(question):
+    prompt = f"[Q] {question} [A]"
+    return generate_text(prompt, temperature=0.4, stop_token="[EOS]")
+
+#print(ask("Tell me something about Earth"))
 
 if __name__ == "__main__":
     while True:
@@ -65,7 +72,6 @@ if __name__ == "__main__":
         if prompt.lower() in ["exit", "quit"]:
             break
 
-        output = generate_text(prompt, stop_token="[EOS]")
-        output = output.replace("[Q]", "").replace("[A]", "").replace("[SEP]", "")
+        output = generate_text(prompt)
         print("\nСгенерированный текст:\n")
         print(output)

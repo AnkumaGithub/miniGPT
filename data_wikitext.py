@@ -80,6 +80,6 @@ def prepare_data():
     process_split(dataset_val, "wiki_val_256")
 
 if __name__ == "__main__":
-    prepare_data()
+    #prepare_data()
     arr = np.memmap("data/wikitext/wiki_train_256.bin", dtype=np.uint16, mode='r')
     print(arr[:900])
