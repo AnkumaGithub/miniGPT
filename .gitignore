@@ -166,4 +166,4 @@ cython_debug/
 !/my_tests/ggfield.py
 !/newfield.py
 !/Llama.py
-!/data_qa.py
+!/data_load/data_qa.py

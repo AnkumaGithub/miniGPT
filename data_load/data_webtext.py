@@ -13,7 +13,7 @@ logging.basicConfig(level=logging.INFO,
 
 def prepare_data():
     # Конфигурация
-    OUTPUT_DIR = "E:/PyCharm 2024.3.5/projects/data/openwebtext"  # Выходная директория
+    OUTPUT_DIR = "/data/openwebtext"  # Выходная директория
     NUM_PROC = 4  # Количество процессов обработки
     NUM_PROC_LOAD = 2  # Процессов для загрузки
     VAL_RATIO = 0.04  # Доля валидации

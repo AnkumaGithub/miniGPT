@@ -11,7 +11,7 @@ logging.basicConfig(level=logging.INFO,
 # Конфигурация
 BLOCK_SIZE = 300
 ENCODING = "gpt2"
-OUTPUT_DIR = "data/tinystories"
+OUTPUT_DIR = "../data/tinystories"
 SPECIAL_TOKENS = ["[PAD]", "[Q]", "[A]", "[SEP]", "[EOS]", "[USER]", "[BOT]"]  # Добавлен PAD
 
 enc = tiktoken.get_encoding(ENCODING)
@@ -95,6 +95,6 @@ def prepare_data():
 if __name__ == "__main__":
     #prepare_data()
     # Пример проверки
-    arr = np.memmap("data/tinystories/train.bin", dtype=np.uint16, mode='r')
+    arr = np.memmap("../data/tinystories/train.bin", dtype=np.uint16, mode='r')
     print("Первый блок:", enc.decode(arr[BLOCK_SIZE*3000:BLOCK_SIZE*3001]))
     print("Последний токен:", arr[BLOCK_SIZE - 1])

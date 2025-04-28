@@ -8,7 +8,7 @@ logging.basicConfig(level=logging.INFO,
                     format='%(asctime)s - %(levelname)s - %(message)s')
 
 ENCODING = "gpt2"
-OUTPUT_DIR = "data/qa"
+OUTPUT_DIR = "../data/qa"
 SPECIAL_TOKENS = ["[Q]", "[A]", "[SEP]", "[EOS]", "[USER]", "[BOT]"]
 enc = tiktoken.get_encoding(ENCODING)
 enc = tiktoken.Encoding(
@@ -43,6 +43,6 @@ def prepare_data():
 
 if __name__ == "__main__":
     prepare_data()
-    arr = np.memmap("data/qa/train.bin", dtype=np.uint16, mode='r')
+    arr = np.memmap("../data/qa/train.bin", dtype=np.uint16, mode='r')
     print(arr[:900])
     print(enc.decode(arr[:900]))
