@@ -10,18 +10,19 @@ from dataclasses import dataclass
 
 @dataclass
 class GPTConfig:
-    vocab_size: int = 50260
+    pad_token_id: int = None
+    vocab_size: int = 50263
     n_layer: int = 12
     n_head: int = 12
-    n_embd: int = 512
-    block_size: int = 256
-    batch_size: int = 40
+    n_embd: int = 768
+    block_size: int = 300
+    batch_size: int = 12
     lr: float = 3e-4
     dropout: float = 0.1
     drop_path_rate: float = 0.05
     bias: bool = False  # Можно включить если нужно
     mode: str = 'wikitext'
-    stride: int = 368
+    stride: int = 300
     weight_decay: float = 0.1
 
 
@@ -271,7 +272,7 @@ class GPT(nn.Module):
                  temperature=1.0,
                  top_p=None,
                  stop_token=None,
-                 cho=None,
+                 echo=None,
                  bad_words_ids=None,
                  repetition_penalty=1.0) -> torch.Tensor:
 
