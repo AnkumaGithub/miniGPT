@@ -24,7 +24,7 @@ logging.basicConfig(level=logging.INFO,
 
 class GPTDataset(Dataset):
     def __init__(self, split, block_size, stride=256):
-        self.data_path = f'E:/PyCharm 2024.3.5/projects/data/wikitext/{split}.bin'
+        self.data_path = f'E:/PyCharm 2024.3.5/projects/data/tinystories/{split}.bin'
         if not os.path.exists(self.data_path):
             raise FileNotFoundError(f"Data file {self.data_path} not found")
 
@@ -98,19 +98,20 @@ def get_lr(it, learning_rate, warmup_iters, min_lr, lr_decay_iters):
 def train():
     # Конфигурация для RTX 3060
     config = GPTConfig(
-        vocab_size=50262,
-        block_size = 512,
-        n_layer=16,
+        vocab_size=50263,
+        block_size = 300,
+        n_layer=12,
         n_head=12,
         n_embd=768,
         dropout=0.1,
-        drop_path_rate=0.05,
+        drop_path_rate=0.1,
         batch_size = 12,
         lr = 3e-4,
         bias=False,
-        mode='wikitext',
-        stride = 384,
+        mode='ts',
+        stride = 300,
         weight_decay = 0.1,
+        pad_token_id = None
     )
 
     # Инициализация Comet ML
@@ -154,6 +155,8 @@ def train():
         # Инициализация модели с оптимизациями
         model = GPT(config).cuda()
         dialog_mode = False
+        model.config.pad_token_id = enc.encode_single_token("[PAD]")
+        print(model.config.pad_token_id)
 
         # Проверка наличия CUDA
         if not torch.cuda.is_available():
@@ -174,7 +177,7 @@ def train():
             num_workers = min(4, os.cpu_count() // 4)
             print("DataLoader-train-start")
             train_loader = DataLoader(
-                GPTDataset('wiki_train_256', config.block_size, stride=config.stride),
+                GPTDataset('train_512_200M_1', config.block_size, stride=config.stride),
                 batch_size=config.batch_size,
                 shuffle=True,
                 num_workers=num_workers,
@@ -184,7 +187,7 @@ def train():
             print("DataLoader-train-end")
             print("DataLoader-val-start")
             val_loader = DataLoader(
-                GPTDataset('wiki_val_256', config.block_size, stride=config.stride),
+                GPTDataset('val_512', config.block_size, stride=config.stride),
                 batch_size=config.batch_size,
                 num_workers=num_workers,
                 pin_memory=False,
@@ -250,6 +253,7 @@ def train():
                         loss = torch.nn.functional.cross_entropy(
                             logits.view(-1, logits.size(-1)),
                             Y.view(-1),
+                            ignore_index=model.config.pad_token_id  # Игнорируем PAD
                         )
 
                     lr = get_lr(global_step, config.lr, warmup_iters, min_lr, lr_decay_iters)
