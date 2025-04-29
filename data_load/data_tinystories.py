@@ -55,8 +55,8 @@ def prepare_data():
         # Формируем блок: текст + паддинг + EOS
         block = (
                 truncated +
-                [pad_id] * pad_needed +
-                [eos_id]
+                [eos_id] +
+                [pad_id] * pad_needed
         )
 
         # Контроль длины
@@ -96,5 +96,5 @@ if __name__ == "__main__":
     #prepare_data()
     # Пример проверки
     arr = np.memmap("../data/tinystories/train.bin", dtype=np.uint16, mode='r')
-    print("Первый блок:", enc.decode(arr[BLOCK_SIZE*3000:BLOCK_SIZE*3001]))
+    print("Первый блок:", enc.decode(arr[:BLOCK_SIZE]))
     print("Последний токен:", arr[BLOCK_SIZE - 1])
