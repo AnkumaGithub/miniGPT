@@ -95,6 +95,6 @@ def prepare_data():
 if __name__ == "__main__":
     #prepare_data()
     # Пример проверки
-    arr = np.memmap("../data/tinystories/train.bin", dtype=np.uint16, mode='r')
+    arr = np.memmap("../data/tinystories/train_150M_2.bin", dtype=np.uint16, mode='r')
     print("Первый блок:", enc.decode(arr[:BLOCK_SIZE]))
     print("Последний токен:", arr[BLOCK_SIZE - 1])

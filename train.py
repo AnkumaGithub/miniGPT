@@ -99,19 +99,19 @@ def train():
     # Конфигурация для RTX 3060
     config = GPTConfig(
         vocab_size=50263,
-        block_size = 300,
+        block_size=300,
         n_layer=12,
         n_head=12,
         n_embd=768,
-        dropout=0.1,
-        drop_path_rate=0.1,
-        batch_size = 12,
-        lr = 3e-4,
+        dropout=0.75,
+        drop_path_rate=0.5,
+        batch_size=12,
+        lr=3e-4,
         bias=False,
-        mode='ts',
-        stride = 300,
-        weight_decay = 0.1,
-        pad_token_id = None
+        mode='ts_2',
+        stride=300,
+        weight_decay=0.1,
+        pad_token_id=None
     )
 
     # Инициализация Comet ML
@@ -141,7 +141,7 @@ def train():
     })
 
     ENCODING = "gpt2"
-    SPECIAL_TOKENS = ["[Q]", "[A]", "[SEP]", "[EOS]", "[USER]", "[BOT]"]
+    SPECIAL_TOKENS = ["[PAD]", "[Q]", "[A]", "[SEP]", "[EOS]", "[USER]", "[BOT]"]
 
     enc = tiktoken.get_encoding(ENCODING)
     enc = tiktoken.Encoding(
@@ -177,9 +177,9 @@ def train():
             num_workers = min(4, os.cpu_count() // 4)
             print("DataLoader-train-start")
             train_loader = DataLoader(
-                GPTDataset('train_512_200M_1', config.block_size, stride=config.stride),
+                GPTDataset('train_30M', config.block_size, stride=config.stride),
                 batch_size=config.batch_size,
-                shuffle=True,
+                shuffle=False,
                 num_workers=num_workers,
                 pin_memory=False,
                 persistent_workers=True
@@ -187,9 +187,10 @@ def train():
             print("DataLoader-train-end")
             print("DataLoader-val-start")
             val_loader = DataLoader(
-                GPTDataset('val_512', config.block_size, stride=config.stride),
+                GPTDataset('val', config.block_size, stride=config.stride),
                 batch_size=config.batch_size,
                 num_workers=num_workers,
+                shuffle=False,
                 pin_memory=False,
                 persistent_workers=True
             )
@@ -201,7 +202,7 @@ def train():
         # Оптимизатор и скейлер
         warmup_iters = 800
         min_lr = 3e-5
-        current_epochs = 2
+        current_epochs = 1
         new_it = 0
         lr_decay_iters = current_epochs * len(train_loader)  # Общее число итераций
 
@@ -294,6 +295,7 @@ def train():
                             logits.view(-1, logits.size(-1)),
                             Y.view(-1),
                             reduction='sum',
+                            ignore_index=model.config.pad_token_id  # Игнорируем PAD
                         )
                         val_loss += loss.item()
                         total_tokens += Y.numel()

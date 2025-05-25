@@ -21,7 +21,7 @@ class GPTConfig:
     dropout: float = 0.1
     drop_path_rate: float = 0.05
     bias: bool = False  # Можно включить если нужно
-    mode: str = 'wikitext'
+    mode: str = 'ts_2'
     stride: int = 300
     weight_decay: float = 0.1
 
@@ -63,6 +63,10 @@ class SelfAttention(nn.Module):
         self.head_dim = config.n_embd // config.n_head
         self.max_seq_len = config.block_size
 
+        # Attention maps
+        self.attn_weights = None
+        self.maps = True
+
         self.rope = ROPE(self.head_dim)
         # преобразовываем в q k v
         self.q_attn = nn.Linear(config.n_embd, config.n_embd, bias=config.bias)
@@ -102,7 +106,7 @@ class SelfAttention(nn.Module):
             k = self.rope(k, offset) #[keys, offset]
         new_key_values = (k, v) if use_cache else None
 
-        if self.flash:
+        if self.flash and self.maps == False:
             dropout_p = self.attn_dropout.p if self.training else 0
             y = F.scaled_dot_product_attention(
                 q, k, v,
@@ -120,6 +124,7 @@ class SelfAttention(nn.Module):
             att = att.masked_fill(mask == 0, float('-inf'))
             att = F.softmax(att, dim=-1)
             att = self.attn_dropout(att)
+            self.attn_weights = att
             y = att @ v
 
         y = y.transpose(1, 2).contiguous().view(B, T, C)
@@ -274,9 +279,10 @@ class GPT(nn.Module):
                  stop_token=None,
                  echo=None,
                  bad_words_ids=None,
-                 repetition_penalty=1.0) -> torch.Tensor:
+                 repetition_penalty=1.0) -> tuple[torch.Tensor, list]:
 
         self.eval()
+        attention_maps = []
         original_len = idx.size(1)
         past_key_values = None
 
@@ -298,6 +304,12 @@ class GPT(nn.Module):
                     (k[:, :, -keep_len:, :], v[:, :, -keep_len:, :])
                     for (k, v) in past_key_values
                 ] if past_key_values else None
+
+            layer_attentions = []
+            for block in self.transformer.h:
+                if block.attn.attn_weights is not None:
+                    layer_attentions.append(block.attn.attn_weights.detach().cpu())
+            attention_maps.append(layer_attentions)
 
             # Прямой проход с использованием past_key_values
             logits, new_kv = self(input_ids, past_key_values=past_key_values, use_cache=True)
@@ -344,4 +356,4 @@ class GPT(nn.Module):
         full_sequence = idx if echo else idx[:, original_len:]
 
         # Обрезка до исходной максимальной длины + новых токенов
-        return full_sequence[:, :original_len + max_new_tokens]
+        return full_sequence[:, :original_len + max_new_tokens], attention_maps

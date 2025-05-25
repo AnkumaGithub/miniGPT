@@ -6,16 +6,18 @@ import torch
 import torch.nn as nn
 import os
 
-val = np.memmap("data/tinystories/val_256.bin", dtype=np.uint16, mode='r')
+val = np.memmap("E:/PyCharm 2024.3.5/projects/data/tinystories/train_30M.bin", dtype=np.uint16, mode='r')
 
-encoder = tiktoken.get_encoding('gpt2')
-block = val[0:128]
+SPECIAL_TOKENS = ["[PAD]", "[Q]", "[A]", "[SEP]", "[EOS]", "[USER]", "[BOT]"]
 
-wpe=nn.Embedding(128, 4)
-B, T = block.size()
-pos = torch.arange(0, T, device="cuda").unsqueeze(0)
-pos = torch.clamp(pos, 0, 128 - 1)
-pos_emb = wpe(pos)
-print(pos_emb)
-print(val[0:128])
-print(encoder.decode(val[0:128]))
+enc = tiktoken.get_encoding('gpt2')
+enc = tiktoken.Encoding(
+    name=enc.name,
+    pat_str=enc._pat_str,
+    mergeable_ranks=enc._mergeable_ranks,
+    special_tokens={**enc._special_tokens, **{token: len(enc._mergeable_ranks) + i for i, token in enumerate(SPECIAL_TOKENS)}}
+)
+
+print(enc.decode(val[0:300]))
+print(enc.decode(val[300:600]))
+print(enc.decode(val[600:900]))

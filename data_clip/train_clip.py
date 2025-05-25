@@ -2,14 +2,11 @@ import numpy as np
 import os
 
 # Путь к файлу val.bin
-val_path = "/data/openwebtext/train_stride_512_5h_500m.bin"
-split1 = 'train_stride_256_4h_200m_1'
-split2 = 'train_stride_256_4h_200m_2'
-split3 = 'train_stride_256_4h_200m_3'
-output_path = os.path.join("/data/openwebtext", f'{split3}.bin')
+val_path = "E:/PyCharm 2024.3.5/projects/data/wikitext/wiki_train_256.bin"
+split1 = 'wiki_train_256_60M'
+output_path = os.path.join("E:/PyCharm 2024.3.5/projects/data/wikitext", f'{split1}.bin')
 
-target_train_tokens_512 = 599_998_464
-target_train_tokens = 199_999_488
+target_train_tokens = 60_000_000
 
 #данные из val.bin
 val_data = np.memmap(val_path, dtype=np.uint16, mode='r')
@@ -20,7 +17,7 @@ else:
     new_val = np.memmap(output_path, dtype=np.uint16, mode='w+', shape=(target_train_tokens,))
 
     #данные до целевого размера
-    new_val[:] = val_data[target_train_tokens * 2:target_train_tokens + target_train_tokens + target_train_tokens]
+    new_val[:] = val_data[:target_train_tokens]
     new_val.flush()
     del new_val
 
