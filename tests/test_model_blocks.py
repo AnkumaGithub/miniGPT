@@ -1,7 +1,7 @@
 import pytest
 import torch
 import math
-from model import GPTConfig, CausalSelfAttention, RotaryPositionalEmbeddings, MLP, LayerNorm, DropPath, Block, GPT
+from src.model.model import GPTConfig, CausalSelfAttention, RotaryPositionalEmbeddings, MLP, LayerNorm, DropPath, Block, GPT
 
 
 @pytest.fixture

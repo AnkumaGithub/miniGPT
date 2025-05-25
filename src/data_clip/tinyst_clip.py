@@ -2,10 +2,10 @@ import numpy as np
 import os
 
 # Путь к файлу val.bin
-val_path = "E:/PyCharm 2024.3.5/projects/data/tinystories/train.bin"
+val_path = "/data/tinystories/train.bin"
 
 split = 'train_150M_4'
-output_path = os.path.join("E:/PyCharm 2024.3.5/projects/data/tinystories", f'{split}.bin')
+output_path = os.path.join("/data/tinystories", f'{split}.bin')
 
 target_train_tokens_128 = 150_000_000 # для stride=128
 

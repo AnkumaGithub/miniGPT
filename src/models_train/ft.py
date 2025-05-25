@@ -12,12 +12,12 @@ os.environ["TEMP"] = "E:/temp_pytorch"
 
 from datasets import load_from_disk
 
-load_dotenv(dotenv_path='.env')
+load_dotenv(dotenv_path='../../.env')
 
 os.environ["COMET_API_KEY"] = os.getenv("COMET_API_KEY")
 
-dataset = load_from_disk("E:/PyCharm 2024.3.5/projects/data/tinystories_HF")
-tokenizer = GPT2TokenizerFast.from_pretrained("E:/PyCharm 2024.3.5/projects/data/tinystories_HF")
+dataset = load_from_disk("/data/tinystories_HF")
+tokenizer = GPT2TokenizerFast.from_pretrained("/data/tinystories_HF")
 SPECIAL_TOKENS = ["[EOS]", "[PAD]"]
 tokenizer.add_special_tokens({"additional_special_tokens": SPECIAL_TOKENS})
 tokenizer.pad_token = "[PAD]"
@@ -38,7 +38,7 @@ peft_config = LoraConfig(
 model = get_peft_model(model, peft_config)
 
 training_args = TrainingArguments(
-    output_dir="./results",
+    output_dir="../../results",
     per_device_train_batch_size=20,
     gradient_accumulation_steps=16,
     num_train_epochs=1,

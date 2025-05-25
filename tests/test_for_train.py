@@ -2,10 +2,8 @@ import pytest
 import torch
 import numpy as np
 from unittest.mock import Mock, patch
-from train import GPTDataset, train
-from model import GPTConfig
-import os
-from pathlib import Path
+from src.models_train.train import GPTDataset, train
+from src.model.model import GPTConfig
 
 
 @pytest.fixture

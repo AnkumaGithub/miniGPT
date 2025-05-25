@@ -9,7 +9,7 @@ logging.basicConfig(level=logging.INFO,
 
 BLOCK_SIZE = 512
 ENCODING = "gpt2"
-OUTPUT_DIR = "../data/wikitext"
+OUTPUT_DIR = "../../data/wikitext"
 SPECIAL_TOKENS = ["[Q]", "[A]", "[SEP]", "[EOS]", "[USER]", "[BOT]"]
 
 def prepare_data():
@@ -81,5 +81,5 @@ def prepare_data():
 
 if __name__ == "__main__":
     #prepare_data()
-    arr = np.memmap("../data/wikitext/wiki_train_256.bin", dtype=np.uint16, mode='r')
+    arr = np.memmap("../../data/wikitext/wiki_train_256.bin", dtype=np.uint16, mode='r')
     print(arr[:900])

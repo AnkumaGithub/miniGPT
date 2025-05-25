@@ -1,11 +1,9 @@
-import argparse
-
 import torch
 import tiktoken
-from model import GPT, GPTConfig
+from src.model.model import GPT, GPTConfig
 
 import matplotlib.pyplot as plt
-import numpy as np
+
 
 #plt.rcParams['font.family'] = 'Noto Sans CJK JP'
 

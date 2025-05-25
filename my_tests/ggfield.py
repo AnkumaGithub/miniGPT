@@ -2,12 +2,10 @@ import torch
 import numpy as np
 from tqdm import tqdm
 from torch.utils.data import Dataset, DataLoader
-from torch.amp import autocast, GradScaler
-from model import GPT, GPTConfig
+from src.model.model import GPTConfig
 import logging
 import os
-import psutil
-from dotenv import load_dotenv
+
 
 class GPTDataset(Dataset):
     def __init__(self, split, block_size, stride=256):

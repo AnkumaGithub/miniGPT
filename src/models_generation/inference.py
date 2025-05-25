@@ -1,12 +1,12 @@
 from transformers import GPT2LMHeadModel, GPT2TokenizerFast, pipeline
 from peft import PeftModel
 
-tokenizer = GPT2TokenizerFast.from_pretrained("./results/checkpoint-441")
+tokenizer = GPT2TokenizerFast.from_pretrained("../../results/checkpoint-441")
 
 base_model = GPT2LMHeadModel.from_pretrained("gpt2")
 base_model.resize_token_embeddings(len(tokenizer))
 
-model = PeftModel.from_pretrained(base_model, "./results/checkpoint-441")
+model = PeftModel.from_pretrained(base_model, "../../results/checkpoint-441")
 model = model.merge_and_unload()
 
 generator = pipeline(

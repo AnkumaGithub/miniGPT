@@ -1,12 +1,11 @@
 from comet_ml import Experiment
-import comet_ml
 import tiktoken
 import torch
 import numpy as np
 from tqdm import tqdm
 from torch.utils.data import Dataset, DataLoader
-from torch.amp import autocast, GradScaler
-from model import GPT, GPTConfig
+from torch.amp import autocast
+from src.model.model import GPT, GPTConfig
 import logging
 import os
 import psutil
@@ -16,7 +15,7 @@ import math
 os.environ["TMPDIR"] = "E:/temp_pytorch"
 os.environ["TEMP"] = "E:/temp_pytorch"
 
-load_dotenv(dotenv_path='.env') # Подгружаем секретные данные
+load_dotenv(dotenv_path='../../.env') # Подгружаем секретные данные
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO,

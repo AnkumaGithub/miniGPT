@@ -2,9 +2,9 @@ import numpy as np
 import os
 
 # Путь к файлу val.bin
-val_path = "E:/PyCharm 2024.3.5/projects/data/wikitext/wiki_train_256.bin"
+val_path = "/data/wikitext/wiki_train_256.bin"
 split1 = 'wiki_train_256_60M'
-output_path = os.path.join("E:/PyCharm 2024.3.5/projects/data/wikitext", f'{split1}.bin')
+output_path = os.path.join("/data/wikitext", f'{split1}.bin')
 
 target_train_tokens = 60_000_000
 

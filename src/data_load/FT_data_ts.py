@@ -8,7 +8,7 @@ logging.basicConfig(level=logging.INFO,
 
 BLOCK_SIZE = 256
 SPECIAL_TOKENS = ["[EOS]", "[PAD]"]
-OUTPUT_DIR = "E:/PyCharm 2024.3.5/projects/data/tinystories_HF"
+OUTPUT_DIR = "/data/tinystories_HF"
 
 
 def prepare_data():

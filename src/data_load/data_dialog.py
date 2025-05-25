@@ -9,7 +9,7 @@ logging.basicConfig(level=logging.INFO,
 
 BLOCK_SIZE = 512
 ENCODING = "gpt2"
-OUTPUT_DIR = "../data/gen_qa_dialog"
+OUTPUT_DIR = "../../data/gen_qa_dialog"
 SPECIAL_TOKENS = ["[Q]", "[A]", "[SEP]", "[EOS]", "[USER]", "[BOT]"]
 
 
